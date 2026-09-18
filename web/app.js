@@ -36,6 +36,15 @@
   const thisOverContainer = document.getElementById("thisOverContainer");
   const alertBanner = document.getElementById("alertBanner");
 
+  // New Alert Banner & Preset Selector Elements
+  const systemAlert = document.getElementById("systemAlert");
+  const systemAlertText = document.getElementById("systemAlertText");
+  const btnDismissAlert = document.getElementById("btnDismissAlert");
+  const presetMatchSelect = document.getElementById("presetMatchSelect");
+  const btnRefreshMatches = document.getElementById("btnRefreshMatches");
+  const matchUrlInput = document.getElementById("matchUrl");
+  const resolveBadge = document.getElementById("resolveBadge");
+  const resolveBadgeText = document.getElementById("resolveBadgeText");
 
   const onAirBadge = document.getElementById("onAirBadge");
   const onAirText = document.getElementById("onAirText");
@@ -50,6 +59,36 @@
 
   let totalBalls = 0;
   let totalArchives = 0;
+
+  function showAlert(msg) {
+    if (systemAlert && systemAlertText) {
+      systemAlertText.textContent = msg;
+      systemAlert.classList.remove("hidden");
+    }
+  }
+
+  function hideAlert() {
+    if (systemAlert) {
+      systemAlert.classList.add("hidden");
+    }
+  }
+
+  function showResolveNote(note) {
+    if (resolveBadge && resolveBadgeText && note) {
+      resolveBadgeText.textContent = note;
+      resolveBadge.classList.remove("hidden");
+    }
+  }
+
+  function hideResolveNote() {
+    if (resolveBadge) {
+      resolveBadge.classList.add("hidden");
+    }
+  }
+
+  if (btnDismissAlert) {
+    btnDismissAlert.addEventListener("click", hideAlert);
+  }
 
   // 1. WebSocket Connection
   function connectWebSocket() {
@@ -105,6 +144,20 @@
 
       case "feed_item":
         addFeedItem(msg.data);
+        break;
+
+      case "match_resolved":
+        if (msg.data && msg.data.resolved_url) {
+          matchUrlInput.value = msg.data.resolved_url;
+        }
+        if (msg.data && msg.data.note) {
+          showResolveNote(msg.data.note);
+        }
+        break;
+
+      case "error":
+        showAlert(msg.data.message || msg.data);
+        updateEngineStatus({ is_running: false });
         break;
     }
   }
@@ -281,19 +334,83 @@
     audioPlayer.play();
   };
 
-  // 3. User Controls
+  // 3. User Controls & Active Match Selector
+  async function loadActiveMatches() {
+    if (!presetMatchSelect) return;
+    try {
+      presetMatchSelect.innerHTML = '<option value="">⚡ Fetching live matches from CREX...</option>';
+      const resp = await fetch("/api/live-matches");
+      const data = await resp.json();
+      if (data.ok && Array.isArray(data.matches) && data.matches.length > 0) {
+        presetMatchSelect.innerHTML = '<option value="">-- Select an active match from CREX --</option>';
+        data.matches.forEach((m) => {
+          const opt = document.createElement("option");
+          opt.value = m.url;
+          opt.textContent = m.title;
+          presetMatchSelect.appendChild(opt);
+        });
+      } else {
+        presetMatchSelect.innerHTML = '<option value="">No live matches currently listed (paste URL below)</option>';
+      }
+    } catch (err) {
+      console.warn("Failed to load active matches:", err);
+      presetMatchSelect.innerHTML = '<option value="">Unable to fetch match list (paste URL below)</option>';
+    }
+  }
+
+  if (presetMatchSelect) {
+    presetMatchSelect.addEventListener("change", (e) => {
+      const selected = e.target.value;
+      if (selected) {
+        matchUrlInput.value = selected;
+        hideAlert();
+      }
+    });
+  }
+
+  if (btnRefreshMatches) {
+    btnRefreshMatches.addEventListener("click", () => {
+      loadActiveMatches();
+    });
+  }
+
+  // Real-time Input Match Auto-Resolver
+  let resolveDebounceTimer = null;
+  matchUrlInput.addEventListener("input", () => {
+    hideResolveNote();
+    hideAlert();
+    clearTimeout(resolveDebounceTimer);
+    const val = matchUrlInput.value.trim();
+    if (val.length < 3) return;
+
+    resolveDebounceTimer = setTimeout(async () => {
+      try {
+        const resp = await fetch("/api/resolve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: val }),
+        });
+        const res = await resp.json();
+        if (res.ok && res.note) {
+          showResolveNote(res.note);
+        }
+      } catch (_) {}
+    }, 450);
+  });
+
   btnStart.addEventListener("click", async () => {
-    const url = document.getElementById("matchUrl").value.trim();
+    hideAlert();
+    const url = matchUrlInput.value.trim();
     const lang = document.getElementById("langSelect").value;
     const key = document.getElementById("streamKey").value.trim();
 
     if (!url) {
-      alert("Please provide a valid match link!");
+      showAlert("Please enter any match link (CREX, Cricbuzz, Cricinfo), team names (e.g. AUS vs ZIM), or pick an active match above.");
       return;
     }
 
     btnStart.disabled = true;
-    statusText.textContent = "STARTING...";
+    statusText.textContent = "CONNECTING FEED...";
 
     try {
       const resp = await fetch("/api/start", {
@@ -303,12 +420,22 @@
       });
       const res = await resp.json();
       if (!res.ok) {
-        alert("Error starting stream: " + (res.error || "Unknown error"));
+        showAlert("Cannot start broadcast: " + (res.error || "Match feed not found."));
         btnStart.disabled = false;
+        statusText.textContent = "IDLE";
+      } else {
+        hideAlert();
+        if (res.resolved_url) {
+          matchUrlInput.value = res.resolved_url;
+        }
+        if (res.note) {
+          showResolveNote(res.note);
+        }
       }
     } catch (e) {
-      alert("Failed to connect to server: " + e);
+      showAlert("Failed to connect to backend server: " + e.message);
       btnStart.disabled = false;
+      statusText.textContent = "IDLE";
     }
   });
 
@@ -358,4 +485,5 @@
   // Run
   connectWebSocket();
   loadInitialData();
+  loadActiveMatches();
 })();

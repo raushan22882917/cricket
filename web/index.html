@@ -36,12 +36,38 @@
     <section class="control-card glass-panel">
       <div class="control-header">
         <h2>Match Feed Configuration</h2>
-        <span class="control-sub">Paste any CREX match link to automatically stream live ball-by-ball commentary</span>
+        <span class="control-sub">Select an active CREX live match or paste a direct match link</span>
       </div>
+
+      <!-- System / Error Alert Banner -->
+      <div id="systemAlert" class="system-alert-banner hidden">
+        <span class="alert-icon">⚠️</span>
+        <span id="systemAlertText" class="alert-text"></span>
+        <button id="btnDismissAlert" type="button" class="alert-close-btn" title="Dismiss">✕</button>
+      </div>
+
+      <!-- Live Match Auto-Discovery Picker -->
+      <div class="preset-selector-row">
+        <div class="preset-label">
+          <span class="live-dot-mini"></span>
+          <span>Active Matches on CREX:</span>
+        </div>
+        <select id="presetMatchSelect" class="preset-select">
+          <option value="">⚡ Loading live matches...</option>
+        </select>
+        <button id="btnRefreshMatches" type="button" class="btn btn-ghost" title="Refresh match list">
+          🔄 Refresh
+        </button>
+      </div>
+
       <div class="control-inputs">
         <div class="input-group url-group">
-          <label for="matchUrl">Live Match URL</label>
-          <input type="text" id="matchUrl" placeholder="Paste any CREX live match link here (e.g. https://crex.com/cricket-live-score/...)" value="">
+          <label for="matchUrl">Match Link or Teams (CREX, Cricbuzz, or Team Names)</label>
+          <input type="text" id="matchUrl" placeholder="Paste any match link or enter teams (e.g. AUS vs ZIM, IND vs AFG)" value="">
+          <div id="resolveBadge" class="resolve-badge hidden">
+            <span class="resolve-icon">🎯</span>
+            <span id="resolveBadgeText"></span>
+          </div>
         </div>
         <div class="input-group lang-group">
           <label for="langSelect">Broadcast Language</label>

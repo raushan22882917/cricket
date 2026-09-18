@@ -95,31 +95,50 @@ class CrexParser:
         }
         try:
             if session and not session.closed:
-                async with session.get(self.url, headers=headers, timeout=aiohttp.ClientTimeout(total=3.5)) as resp:
+                async with session.get(self.url, headers=headers, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=4.5)) as resp:
+                    if resp.status == 404 or str(resp.url).endswith("/404"):
+                        raise ValueError(f"Match URL returned 404 (Not Found): {self.url}")
                     if resp.status == 200:
-                        return await resp.text()
+                        text = await resp.text()
+                        if "<title>404" in text or "Page Not Found" in text:
+                            raise ValueError(f"Match URL not found on CREX (404 Page): {self.url}")
+                        return text
+                    raise ValueError(f"CREX server returned HTTP {resp.status}")
             else:
-                timeout = aiohttp.ClientTimeout(total=3.5)
+                timeout = aiohttp.ClientTimeout(total=4.5)
                 async with aiohttp.ClientSession(timeout=timeout) as s:
-                    async with s.get(self.url, headers=headers) as resp:
+                    async with s.get(self.url, headers=headers, allow_redirects=True) as resp:
+                        if resp.status == 404 or str(resp.url).endswith("/404"):
+                            raise ValueError(f"Match URL returned 404 (Not Found): {self.url}")
                         if resp.status == 200:
-                            return await resp.text()
+                            text = await resp.text()
+                            if "<title>404" in text or "Page Not Found" in text:
+                                raise ValueError(f"Match URL not found on CREX (404 Page): {self.url}")
+                            return text
+                        raise ValueError(f"CREX server returned HTTP {resp.status}")
+        except ValueError:
+            raise
         except Exception as e:
-            logger.debug(f"Async fetch failed ({e}), falling back to curl")
+            logger.debug(f"Async fetch error ({e}), falling back to curl")
         return await asyncio.to_thread(self.fetch_html)
 
     def fetch_html(self) -> str:
         try:
             cmd = [
-                "curl", "-s",
+                "curl", "-s", "-L", "--max-redirs", "3",
                 "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "-H", "Accept-Language: en-US,en;q=0.9",
                 self.url
             ]
-            return subprocess.check_output(cmd, timeout=12).decode("utf-8", errors="ignore")
+            output = subprocess.check_output(cmd, timeout=12).decode("utf-8", errors="ignore")
+            if "<title>404" in output or "Page Not Found" in output or "Redirecting to /404" in output:
+                raise ValueError(f"Match URL does not exist on CREX (404 Not Found): {self.url}")
+            return output
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"Error fetching URL: {e}")
-            return ""
+            raise ValueError(f"Network error while connecting to CREX: {e}")
 
     def parse(self, html_text: str) -> Dict[str, Any]:
         soup = BeautifulSoup(html_text, "html.parser")
@@ -384,6 +403,106 @@ class CrexParser:
         }
 
 
+def get_live_matches() -> List[Dict[str, str]]:
+    """Scrapes crex.com to discover currently active/featured live matches."""
+    try:
+        cmd = [
+            "curl", "-s", "-L",
+            "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "-H", "Accept-Language: en-US,en;q=0.9",
+            "https://crex.com/"
+        ]
+        html_content = subprocess.check_output(cmd, timeout=12).decode("utf-8", errors="ignore")
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        matches = []
+        seen_urls = set()
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "/cricket-live-score/" in href and "-match-updates-" in href:
+                full_url = f"https://crex.com{href}" if href.startswith("/") else href
+                if full_url in seen_urls:
+                    continue
+                seen_urls.add(full_url)
+
+                raw_text = a.get_text(" ", strip=True)
+                slug_part = href.split("/cricket-live-score/")[-1].split("-match-updates-")[0]
+                formatted_slug = slug_part.replace("-", " ").title()
+
+                title = re.sub(r'\s+', ' ', raw_text).strip() if raw_text and len(raw_text) > 6 else formatted_slug
+                if len(title) > 65:
+                    title = title[:62] + "..."
+
+                matches.append({
+                    "title": title or formatted_slug,
+                    "url": full_url,
+                    "slug": slug_part
+                })
+        return matches[:15]
+    except Exception as e:
+        logger.warning(f"Error fetching live matches list: {e}")
+        return []
+
+
+def resolve_match_url(user_input: str) -> tuple[str, Optional[str]]:
+    """Smart Match Resolver: Maps any URL (CREX, Cricbuzz, Cricinfo, partial slug, or team query)
+    to a valid, live CREX match updates feed."""
+    raw = user_input.strip()
+    if not raw:
+        return raw, None
+
+    # 1. Direct valid CREX link with match ID
+    if "crex.com/cricket-live-score/" in raw and "-match-updates-" in raw:
+        return raw, None
+
+    # 2. Extract match ID if present in any CREX URL (e.g. /social/...-11FL or -11FL)
+    crex_id_match = re.search(r'-([a-zA-Z0-9]{3,6})$', raw.rstrip('/'))
+    if "crex.com" in raw and crex_id_match:
+        mid = crex_id_match.group(1)
+        # Exclude 4-digit years like 2022, 2026
+        if not re.match(r'^(?:19|20)\d{2}$', mid):
+            slug_match = re.search(r'([a-zA-Z0-9\-]+?)-[a-zA-Z0-9]{3,6}$', raw.rstrip('/'))
+            if slug_match:
+                slug_base = slug_match.group(1).split("/")[-1]
+                slug_base = re.sub(r'-(?:match-updates|live-score|scorecard|info)$', '', slug_base)
+                reconstructed = f"https://crex.com/cricket-live-score/{slug_base}-match-updates-{mid}"
+                return reconstructed, "Auto-reconstructed CREX Live Feed URL"
+
+    # 3. Fuzzy match against current CREX live fixtures
+    cleaned = re.sub(r'https?://[^\s/]+', '', raw)
+    tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+', cleaned)
+              if t.lower() not in ['https', 'http', 'com', 'www', 'cricket', 'live', 'score', 'scores', 'match', 'updates', 'series']]
+
+    try:
+        live_list = get_live_matches()
+        best_match = None
+        best_score = 0
+
+        for m in live_list:
+            m_text = (m.get('slug', '') + " " + m.get('title', '')).lower()
+            m_tokens = set(re.findall(r'[a-zA-Z0-9]+', m_text))
+
+            score = 0
+            for t in tokens:
+                if t in m_tokens:
+                    score += 3 if len(t) >= 3 else 1
+                elif any(t in mt for mt in m_tokens if len(t) >= 3):
+                    score += 1.5
+
+            if score > best_score:
+                best_score = score
+                best_match = m
+
+        if best_match and best_score >= 3:
+            title_preview = best_match.get('title', '')
+            if len(title_preview) > 40:
+                title_preview = title_preview[:37] + "..."
+            return best_match['url'], f"Auto-resolved to live match: {title_preview}"
+    except Exception as e:
+        logger.debug(f"Smart resolver fuzzy match failed: {e}")
+
+    return raw, None
 
 
 class FastTTS:

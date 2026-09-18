@@ -13,11 +13,12 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Set, Optional
 
+import aiohttp
 from aiohttp import web
 import aiohttp_cors
 
 # Import existing core modules
-from cricket_streamer import CrexParser, FreeTranslator, FastTTS, FastOverlayRenderer
+from cricket_streamer import CrexParser, FreeTranslator, FastTTS, FastOverlayRenderer, get_live_matches, resolve_match_url
 from src.human_commentator import commentator
 
 logging.basicConfig(
@@ -68,10 +69,56 @@ class BroadcastHub:
         if self.is_running:
             return {"ok": False, "error": "Broadcast is already running"}
 
+        url = url.strip()
+        if not url:
+            return {"ok": False, "error": "Match link or search query is required."}
+
+        # Smart Match Resolution: Accepts CREX (any tab/year), Cricbuzz, Cricinfo, or plain text
+        resolved_url, resolve_note = resolve_match_url(url)
+        target_url = resolved_url if resolved_url else url
+
+        # Pre-flight check: verify URL can be accessed and is not a 404
+        parser = CrexParser(target_url)
+        try:
+            html_text = await parser.fetch_html_async()
+            if not html_text:
+                return {"ok": False, "error": "Unable to fetch content from match URL."}
+            init_data = parser.parse(html_text)
+            self.latest_match_state = init_data
+        except ValueError as ve:
+            # If direct target fails and no resolution was done, attempt fuzzy match fallback
+            if not resolve_note:
+                fallback_url, fallback_note = resolve_match_url(url)
+                if fallback_note and fallback_url != target_url:
+                    target_url = fallback_url
+                    resolve_note = fallback_note
+                    try:
+                        parser = CrexParser(target_url)
+                        html_text = await parser.fetch_html_async()
+                        init_data = parser.parse(html_text)
+                        self.latest_match_state = init_data
+                    except Exception:
+                        return {"ok": False, "error": str(ve)}
+                else:
+                    return {"ok": False, "error": str(ve)}
+            else:
+                return {"ok": False, "error": str(ve)}
+        except Exception as e:
+            logger.warning(f"Pre-flight connection error: {e}")
+            return {"ok": False, "error": f"Failed to connect to match URL: {e}"}
+
         self.is_running = True
-        self.broadcast_task = asyncio.create_task(self._run_broadcast_pipeline(url, lang, stream_key))
+        self.broadcast_task = asyncio.create_task(self._run_broadcast_pipeline(target_url, lang, stream_key, parser=parser))
         await self.broadcast_ws("status", {"is_running": True})
-        return {"ok": True}
+        if resolve_note:
+            await self.broadcast_ws("match_resolved", {
+                "original": url,
+                "resolved_url": target_url,
+                "note": resolve_note
+            })
+        if self.latest_match_state:
+            await self.broadcast_ws("match_state", self.latest_match_state)
+        return {"ok": True, "resolved_url": target_url, "note": resolve_note}
 
     async def stop_broadcast(self):
         if not self.is_running:
@@ -88,9 +135,10 @@ class BroadcastHub:
         await self.broadcast_ws("status", {"is_running": False})
         return {"ok": True}
 
-    async def _run_broadcast_pipeline(self, url: str, lang: str, stream_key: str):
+    async def _run_broadcast_pipeline(self, url: str, lang: str, stream_key: str, parser: Optional[CrexParser] = None):
         logger.info(f"Starting ultra-fast real-time broadcast for URL: {url} (Lang: {lang.upper()})")
-        parser = CrexParser(url)
+        if parser is None:
+            parser = CrexParser(url)
         tts = FastTTS(language=lang)
 
         # Queue bounded to prevent backlog and maintain max 3s lag
@@ -228,10 +276,21 @@ class BroadcastHub:
                                     pass
                             await ball_queue.put({"ball": b, "fresh_data": fresh_data})
 
+                        consecutive_errors = 0
                     except asyncio.CancelledError:
                         break
+                    except ValueError as ve:
+                        consecutive_errors += 1
+                        logger.warning(f"Parse/Fetch error: {ve}")
+                        if consecutive_errors >= 3:
+                            await self.broadcast_ws("error", {"message": str(ve)})
+                            break
                     except Exception as e:
+                        consecutive_errors += 1
                         logger.warning(f"Error in fast scrape poll: {e}")
+                        if consecutive_errors >= 5:
+                            await self.broadcast_ws("error", {"message": f"Connection lost to match feed: {e}"})
+                            break
 
                     # 1.5s poll rate for true real-time live streaming
                     await asyncio.sleep(1.5)
@@ -240,6 +299,7 @@ class BroadcastHub:
             logger.info("Broadcast pipeline cancelled by user.")
         except Exception as e:
             logger.error(f"Broadcast pipeline error: {e}", exc_info=True)
+            await self.broadcast_ws("error", {"message": f"Pipeline error: {str(e)}"})
         finally:
             self.is_running = False
             if voice_task and not voice_task.done():
@@ -291,6 +351,21 @@ async def handle_api_status(request: web.Request) -> web.Response:
 async def handle_api_recordings(request: web.Request) -> web.Response:
     return web.json_response(hub.recordings_meta[:50])
 
+async def handle_api_live_matches(request: web.Request) -> web.Response:
+    matches = await asyncio.to_thread(get_live_matches)
+    return web.json_response({"ok": True, "matches": matches})
+
+async def handle_api_resolve(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        query = body.get("query", "").strip()
+        if not query:
+            return web.json_response({"ok": False, "error": "Query is required"}, status=400)
+        resolved_url, note = resolve_match_url(query)
+        return web.json_response({"ok": True, "resolved_url": resolved_url, "note": note})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
 async def handle_api_start(request: web.Request) -> web.Response:
     try:
         body = await request.json()
@@ -299,10 +374,11 @@ async def handle_api_start(request: web.Request) -> web.Response:
         stream_key = body.get("stream_key", "")
 
         if not url:
-            return web.json_response({"ok": False, "error": "Match URL is required"}, status=400)
+            return web.json_response({"ok": False, "error": "Match URL or team name is required"}, status=400)
 
         res = await hub.start_broadcast(url=url, lang=lang, stream_key=stream_key)
-        return web.json_response(res)
+        status_code = 200 if res.get("ok") else 400
+        return web.json_response(res, status=status_code)
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
@@ -318,6 +394,8 @@ def create_app() -> web.Application:
     app.router.add_get("/ws", handle_ws)
     app.router.add_get("/api/status", handle_api_status)
     app.router.add_get("/api/recordings", handle_api_recordings)
+    app.router.add_get("/api/live-matches", handle_api_live_matches)
+    app.router.add_post("/api/resolve", handle_api_resolve)
     app.router.add_post("/api/start", handle_api_start)
     app.router.add_post("/api/stop", handle_api_stop)
 
