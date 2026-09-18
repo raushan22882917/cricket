@@ -179,10 +179,6 @@ async def main():
                         help="YouTube Live RTMP Stream Key")
     parser.add_argument("--output", default=config.OUTPUT_PREVIEW_FILE,
                         help="Output MP4 file path for preview mode")
-    parser.add_argument("--mock", action="store_true", default=False,
-                        help="Run mock match event replay")
-    parser.add_argument("--delay", type=float, default=7.0,
-                        help="Seconds between balls in mock replay")
     parser.add_argument("--duration", type=float, default=None,
                         help="Maximum broadcast run duration in seconds")
     parser.add_argument("--listen-http", action="store_true", default=True,
@@ -216,11 +212,6 @@ async def main():
         # Run continuous polling task
         scraper_task = asyncio.create_task(scraper.stream_live_from_url(engine.handle_ball_event, poll_interval_seconds=args.poll_interval))
         tasks.append(scraper_task)
-    elif args.mock:
-        # Give streamer 1.5s to establish clean connection
-        await asyncio.sleep(1.5)
-        replay_task = asyncio.create_task(engine.consumer.run_mock_replay(ball_delay_seconds=args.delay))
-        tasks.append(replay_task)
 
     try:
         # Wait until the broadcast loop completes (or is cancelled)

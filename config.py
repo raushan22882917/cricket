@@ -46,4 +46,3 @@ EVENT_SERVER_PORT = int(os.getenv("EVENT_SERVER_PORT", "8088"))
 DATA_DIR = BASE_DIR / "data"
 PLAYERS_FILE = DATA_DIR / "players.json"
 HERITAGE_FILE = DATA_DIR / "heritage.json"
-MOCK_FEED_FILE = BASE_DIR / "mock_match.json"

@@ -84,14 +84,22 @@ class FreeTranslator:
 
 
 class CrexParser:
-    """Scrapes match details and commentary paragraphs line-by-line from CREX."""
-    def __init__(self, url: str):
+    """Scrapes match details and commentary paragraphs line-by-line from CREX.
+
+    CREX renders ball-by-ball commentary server-side in the language selected
+    via its `content-lang` cookie (e.g. 'hi' for native Hindi commentary written
+    by CREX itself, not machine-translated). Passing the same code we broadcast
+    in gets the exact source-site text in that language.
+    """
+    def __init__(self, url: str, lang: str = "en"):
         self.url = url.strip()
+        self.lang = lang
 
     async def fetch_html_async(self, session: Optional[aiohttp.ClientSession] = None) -> str:
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9"
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": f"content-lang={self.lang}"
         }
         try:
             if session and not session.closed:
@@ -128,6 +136,7 @@ class CrexParser:
                 "curl", "-s", "-L", "--max-redirs", "3",
                 "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "-H", "Accept-Language: en-US,en;q=0.9",
+                "-H", f"Cookie: content-lang={self.lang}",
                 self.url
             ]
             output = subprocess.check_output(cmd, timeout=12).decode("utf-8", errors="ignore")
@@ -224,6 +233,13 @@ class CrexParser:
             elif batting_team.upper() == url_team2.upper():
                 bowling_team = url_team1
 
+        # Current Run Rate (CRR) - computed early so available for all commentary strategies
+        overs_float = float(overs_str) if overs_str and overs_str.replace('.', '', 1).isdigit() else 0.0
+        c_ov = int(overs_float)
+        b_rem = int(round((overs_float - c_ov) * 10))
+        tot_balls = c_ov * 6 + b_rem
+        crr = f"{round((total_runs / (tot_balls / 6.0)), 2):.2f}" if tot_balls > 0 else "0.00"
+
         # 3. Batsmen and Bowler (Dynamic with neutral fallbacks)
         striker = "Batter 1"
         striker_runs = 0
@@ -239,7 +255,7 @@ class CrexParser:
         over_idx = full_text.find("OVER ")
         section = full_text[over_idx:over_idx + 250] if over_idx != -1 else full_text
 
-        batter_matches = re.findall(r'([A-Za-z\s\-]+?)\s*\|\s*(\d+)\((\d+)\)', section)
+        batter_matches = re.findall(r'([A-Za-zऀ-ॿ\s\-]+?)\s*\|\s*(\d+)\((\d+)\)', section)
         if len(batter_matches) >= 1:
             striker = batter_matches[0][0].strip()
             striker_runs = int(batter_matches[0][1])
@@ -249,7 +265,7 @@ class CrexParser:
             non_striker_runs = int(batter_matches[1][1])
             non_striker_balls = int(batter_matches[1][2])
 
-        bowler_matches = re.findall(r'([A-Za-z\s\-]+?)\s*\|\s*(\d+)-(\d+)\(([0-9\.]+)\)', section)
+        bowler_matches = re.findall(r'([A-Za-zऀ-ॿ\s\-]+?)\s*\|\s*(\d+)-(\d+)\(([0-9\.]+)\)', section)
         if bowler_matches:
             bowler = bowler_matches[0][0].strip()
             bowler_wickets = int(bowler_matches[0][1])
@@ -280,6 +296,76 @@ class CrexParser:
                     "spoken_line": full_spoken_line
                 })
 
+        # Strategy 4B: Extract from embedded getBallFeeds JSON if HTML classes are missing
+        if not balls_data:
+            for k, v in data_store.items():
+                if "getBallFeeds" in k and isinstance(v, list):
+                    for item in v:
+                        # Case 1: Structured ball object with 'b' (runs/event), 'o' (over), 'c1' (matchup), 'c2' (description)
+                        if item.get("type") == "b" or ("b" in item and "o" in item):
+                            o_val = str(item.get("o", "Live")).strip()
+                            r_val = str(item.get("b", "0")).strip().upper()
+                            m_val = str(item.get("c1", "") or "").strip()
+                            c2_raw = str(item.get("c2", "") or "").strip()
+                            c2_clean = re.sub(r'\s+', ' ', html.unescape(c2_raw)).strip()
+
+                            if c2_clean:
+                                comm_val = c2_clean
+                            elif r_val == "W":
+                                comm_val = f"Wicket! {m_val}" if m_val else "Wicket down!"
+                            elif r_val == "4":
+                                comm_val = "Boundary! Cracking shot races away to the fence for four."
+                            elif r_val == "6":
+                                comm_val = "Maximum! Struck cleanly into the stands for a huge six."
+                            elif r_val == "0":
+                                comm_val = "Good delivery, defended with care, no run."
+                            else:
+                                comm_val = f"{r_val} run{'s' if r_val != '1' else ''} taken off the delivery."
+
+                            spoken = f"Over {o_val}: {m_val}. {comm_val}" if m_val else f"Over {o_val}: {comm_val}"
+                            balls_data.append({
+                                "over": o_val,
+                                "matchup": m_val,
+                                "runs": r_val,
+                                "commentary": comm_val,
+                                "spoken_line": spoken
+                            })
+                            continue
+
+                        # Case 2: Legacy/Text ball format with 'c' string
+                        raw_c = item.get("c", "")
+                        if not raw_c:
+                            continue
+                        clean_c = html.unescape(raw_c.replace("&l;", "<").replace("&g;", ">").replace("&q;", '"').replace("&a;", "&"))
+                        clean_c = re.sub(r'<[^>]+>', '', clean_c).strip()
+                        if len(clean_c) < 10:
+                            continue
+
+                        # Check for over pattern in commentary
+                        m_over = re.search(r'(?:Over\s*|^\s*)(\d+\.\d+)\s*:?\s*([^:\n\r0-9]+?)(?:\s+(\d+|W|4|6|0))?\s*[:\-\.]?\s+(.+)', clean_c)
+                        if m_over:
+                            o_val = m_over.group(1)
+                            m_val = m_over.group(2).strip()
+                            r_val = m_over.group(3) or "0"
+                            comm_val = m_over.group(4).strip()
+                            balls_data.append({
+                                "over": o_val,
+                                "matchup": m_val,
+                                "runs": r_val,
+                                "commentary": comm_val,
+                                "spoken_line": f"Over {o_val}: {m_val}. {comm_val}"
+                            })
+                        else:
+                            on = item.get("on", -1)
+                            over_label = f"{on//6}.{on%6 + 1}" if isinstance(on, int) and on > 0 else "Live"
+                            balls_data.append({
+                                "over": over_label,
+                                "matchup": f"{bowler} to {striker}" if bowler and striker else "",
+                                "runs": "0",
+                                "commentary": clean_c,
+                                "spoken_line": clean_c
+                            })
+
         cards = soup.find_all("div", class_=lambda x: x and "cm-b-roundcard" in x)
         paragraphs = []
         for b in reversed(balls_data):
@@ -292,18 +378,59 @@ class CrexParser:
             if txt and len(txt) > 20 and not any(txt[:25] in p for p in paragraphs):
                 paragraphs.append(txt)
 
-        if not paragraphs:
-            paragraphs = [
-                f"Live broadcast from {venue} between {batting_team} and {bowling_team}.",
-                f"Score stands at {batting_team} {total_runs} for {total_wickets} in {overs_str} overs."
-            ]
+        # Strategy 4C: If balls_data is still empty, parse paragraphs
+        if not balls_data and paragraphs:
+            for p in paragraphs:
+                m_p = re.search(r'(?:Over\s*|^\s*)(\d+\.\d+)\s*:?\s*([^:\n\r0-9]+?)(?:\s+(\d+|W|4|6|0))?\s*[:\-\.]?\s+(.+)', p)
+                if m_p:
+                    balls_data.append({
+                        "over": m_p.group(1),
+                        "matchup": m_p.group(2).strip(),
+                        "runs": m_p.group(3) or "0",
+                        "commentary": m_p.group(4).strip(),
+                        "spoken_line": p
+                    })
+                elif len(p) > 25:
+                    balls_data.append({
+                        "over": "Live",
+                        "matchup": f"{bowler} to {striker}",
+                        "runs": "0",
+                        "commentary": p,
+                        "spoken_line": p
+                    })
 
         # Match status / alert banner
-        m_status = re.search(r"(?:\|\s*)([A-Za-z\s]+won by [0-9\sA-Za-z🏆]+|SCORES ARE LEVELLED|Need \d+ runs? in \d+ balls?|Innings Break)", full_text, re.IGNORECASE)
+        m_status = re.search(r"(?:\|\s*)([A-Za-z\s]+won by [0-9\sA-Za-z🏆]+|SCORES ARE LEVELLED|[A-Za-z\s]+beat [0-9\sA-Za-z🏆]+|Need \d+ runs? in \d+ balls?|Innings Break|Match drawn|Stumps|Rain delay)", full_text, re.IGNORECASE)
         match_status = m_status.group(1).strip() if m_status else ""
 
+        # Strategy 4D: Situational Broadcast Fallback if no commentary is present (Live, Result, or Upcoming)
+        if not balls_data:
+            if match_status and any(w in match_status.lower() for w in ["won by", "beat", "scores are", "drawn"]):
+                situational_comm = f"Match summary from {venue}: {clean_title}. {batting_team} finished with {total_runs} for {total_wickets} in {overs_str} overs. {match_status}."
+                over_label = "Result"
+                matchup_label = f"{batting_team} vs {bowling_team}"
+            elif total_runs == 0 and total_wickets == 0 and overs_str == "0.0":
+                situational_comm = f"Welcome to our live cricket studio from {venue}! Today {batting_team} take on {bowling_team} in an exciting contest. The pitch is ready and anticipation is high. Stay tuned as action gets underway shortly!"
+                over_label = "Pre-Match"
+                matchup_label = f"{batting_team} vs {bowling_team}"
+            else:
+                situational_comm = f"Live action from {venue}. {batting_team} are {total_runs} for {total_wickets} in {overs_str} overs with a current run rate of {crr}. {striker} is on {striker_runs} runs and {non_striker} on {non_striker_runs}."
+                over_label = overs_str if overs_str != "0.0" else "Live"
+                matchup_label = f"{bowler} to {striker}"
+
+            balls_data.append({
+                "over": over_label,
+                "matchup": matchup_label,
+                "runs": "0",
+                "commentary": situational_comm,
+                "spoken_line": situational_comm
+            })
+
+        if not paragraphs:
+            paragraphs = [b["spoken_line"] for b in balls_data]
+
         # Batters detailed statistics (4s, 6s, Strike Rate)
-        b_matches = re.findall(r"([A-Za-z\s\-]+?)\s*\|\s*(\d+)\s*\|\s*\((\d+)\)\s*\|\s*4s:\s*\|\s*(\d+)\s*\|\s*6s:\s*\|\s*(\d+)\s*\|\s*SR:\s*\|\s*([0-9\.]+)", full_text)
+        b_matches = re.findall(r"([A-Za-z\u0900-\u097F\s\-]+?)\s*\|\s*(\d+)\s*\|\s*\((\d+)\)\s*\|\s*4s:\s*\|\s*(\d+)\s*\|\s*6s:\s*\|\s*(\d+)\s*\|\s*SR:\s*\|\s*([0-9\.]+)", full_text)
         striker_fours = int(b_matches[0][3]) if len(b_matches) >= 1 else 0
         striker_sixes = int(b_matches[0][4]) if len(b_matches) >= 1 else 0
         striker_sr = b_matches[0][5] if len(b_matches) >= 1 else "0.0"
@@ -313,14 +440,14 @@ class CrexParser:
         non_striker_sr = b_matches[1][5] if len(b_matches) >= 2 else "0.0"
 
         # Bowler economy
-        b_econ_match = re.search(r"([A-Za-z\s\-]+?)\s*\|\s*(\d+-\d+)\s*\|\s*\(([0-9\.]+)\)\s*\|\s*Econ:\s*\|\s*([0-9\.]+)", full_text)
+        b_econ_match = re.search(r"([A-Za-zऀ-ॿ\s\-]+?)\s*\|\s*(\d+-\d+)\s*\|\s*\(([0-9\.]+)\)\s*\|\s*Econ:\s*\|\s*([0-9\.]+)", full_text)
         bowler_econ = b_econ_match.group(4) if b_econ_match else "0.00"
 
         # Partnership & Last Wicket
         m_pship = re.search(r"P\x27?ship\s*:\s*\|\s*([0-9\(\)]+)", full_text)
         partnership = m_pship.group(1) if m_pship else ""
 
-        m_lastw = re.search(r"Last Wkt\s*:\s*\|\s*([A-Za-z\s\-]+?)\s*\|\s*([0-9\(\)]+)", full_text)
+        m_lastw = re.search(r"Last Wkt\s*:\s*\|\s*([A-Za-zऀ-ॿ\s\-]+?)\s*\|\s*([0-9\(\)]+)", full_text)
         last_wicket = f"{m_lastw.group(1).strip()} {m_lastw.group(2).strip()}" if m_lastw else ""
 
         # Current / recent over ball bubbles
@@ -329,38 +456,43 @@ class CrexParser:
 
         # Opponent score (find opponent team score, excluding active batting team and player names)
         team2_score = ""
-        opp_target = None
-        if url_team1 and url_team2:
-            opp_target = url_team2 if batting_team.upper() == url_team1.upper() else url_team1
+        # Exclude historical 'Team Form / Last 5 matches' table from score extraction
+        scorecard_text = full_text.split("Team Form")[0].split("Last 5 matches")[0].split("Recent Form")[0]
 
-        if opp_target:
-            # Look specifically for opp_target score
-            m_target = re.search(rf"\b({opp_target})\s*\|\s*(?:\(([0-9\.]+)\)\s*\|\s*)?(\d+[-/]\d+)(?:\s*\|\s*\(([0-9\.]+)\))?", full_text, re.IGNORECASE)
-            if m_target:
-                ov = m_target.group(2) or m_target.group(4) or ""
-                team2_score = f"{m_target.group(1).upper()} {m_target.group(3)} ({ov} ov)" if ov else f"{m_target.group(1).upper()} {m_target.group(3)}"
-            else:
-                m_target_std = re.search(rf"\b({opp_target})\s+(\d+[-/]\d+)\s*\(([0-9\.]+)(?:\s*ov)?\)", full_text, re.IGNORECASE)
-                if m_target_std:
-                    team2_score = f"{m_target_std.group(1).upper()} {m_target_std.group(2)} ({m_target_std.group(3)} ov)"
+        # Only extract opponent score if match has actual play or valid scorecard
+        is_upcoming_game = (total_runs == 0 and total_wickets == 0 and overs_str == "0.0" and not balls_data)
+        if not is_upcoming_game:
+            opp_target = None
+            if url_team1 and url_team2:
+                opp_target = url_team2 if batting_team.upper() == url_team1.upper() else url_team1
 
-        if not team2_score:
-            opp_candidates = re.findall(r"\b([A-Za-z\-]{2,7})\s*\|\s*(?:\(([0-9\.]+)\)\s*\|\s*)?(\d+[-/]\d+)(?:\s*\|\s*\(([0-9\.]+)\))?", full_text)
-            for cand in opp_candidates:
-                c_team = cand[0].strip()
-                if c_team.upper() != batting_team.upper() and c_team.upper() not in ["LIVE", "OVER", "CRR", "ECON", "TOTAL", bowler.upper()]:
-                    ov = cand[1] or cand[3] or ""
-                    sc = cand[2]
-                    team2_score = f"{c_team} {sc} ({ov} ov)" if ov else f"{c_team} {sc}"
-                    break
+            if opp_target:
+                m_target = re.search(rf"\b({opp_target})\s*\|\s*(?:\(([0-9\.]+)\)\s*\|\s*)?(\d+[-/]\d+)(?:\s*\|\s*\(([0-9\.]+)\))?", scorecard_text, re.IGNORECASE)
+                if m_target:
+                    ov = m_target.group(2) or m_target.group(4) or ""
+                    team2_score = f"{m_target.group(1).upper()} {m_target.group(3)} ({ov} ov)" if ov else f"{m_target.group(1).upper()} {m_target.group(3)}"
+                else:
+                    m_target_std = re.search(rf"\b({opp_target})\s+(\d+[-/]\d+)\s*\(([0-9\.]+)(?:\s*ov)?\)", scorecard_text, re.IGNORECASE)
+                    if m_target_std:
+                        team2_score = f"{m_target_std.group(1).upper()} {m_target_std.group(2)} ({m_target_std.group(3)} ov)"
 
-        if not team2_score:
-            opp_std = re.findall(r"\b([A-Za-z\-]{2,7})\s+(\d+[-/]\d+)\s*\(([0-9\.]+)(?:\s*ov)?\)", full_text)
-            for cand in opp_std:
-                c_team = cand[0].strip()
-                if c_team.upper() != batting_team.upper() and c_team.upper() not in ["LIVE", "OVER", "CRR", "ECON", "TOTAL", bowler.upper()]:
-                    team2_score = f"{c_team} {cand[1]} ({cand[2]} ov)"
-                    break
+            if not team2_score:
+                opp_candidates = re.findall(r"\b([A-Za-z\-]{2,7})\s*\|\s*(?:\(([0-9\.]+)\)\s*\|\s*)?(\d+[-/]\d+)(?:\s*\|\s*\(([0-9\.]+)\))?", scorecard_text)
+                for cand in opp_candidates:
+                    c_team = cand[0].strip()
+                    if c_team.upper() != batting_team.upper() and c_team.upper() not in ["LIVE", "OVER", "CRR", "ECON", "TOTAL", bowler.upper()]:
+                        ov = cand[1] or cand[3] or ""
+                        sc = cand[2]
+                        team2_score = f"{c_team} {sc} ({ov} ov)" if ov else f"{c_team} {sc}"
+                        break
+
+            if not team2_score:
+                opp_std = re.findall(r"\b([A-Za-z\-]{2,7})\s+(\d+[-/]\d+)\s*\(([0-9\.]+)(?:\s*ov)?\)", scorecard_text)
+                for cand in opp_std:
+                    c_team = cand[0].strip()
+                    if c_team.upper() != batting_team.upper() and c_team.upper() not in ["LIVE", "OVER", "CRR", "ECON", "TOTAL", bowler.upper()]:
+                        team2_score = f"{c_team} {cand[1]} ({cand[2]} ov)"
+                        break
 
         # Current Run Rate (CRR)
         overs_float = float(overs_str) if overs_str and overs_str.replace('.', '', 1).isdigit() else 0.0
@@ -404,75 +536,104 @@ class CrexParser:
 
 
 def get_live_matches() -> List[Dict[str, str]]:
-    """Scrapes crex.com to discover currently active/featured live matches."""
-    try:
-        cmd = [
-            "curl", "-s", "-L",
-            "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "-H", "Accept-Language: en-US,en;q=0.9",
-            "https://crex.com/"
-        ]
-        html_content = subprocess.check_output(cmd, timeout=12).decode("utf-8", errors="ignore")
-        soup = BeautifulSoup(html_content, "html.parser")
+    """Scrapes crex.com to discover live, recent/completed, and upcoming matches."""
+    sources = [
+        "https://crex.com/",
+        "https://crex.com/cricket-live-score",
+        "https://crex.com/fixtures/match-list"
+    ]
+    matches = []
+    seen_urls = set()
 
-        matches = []
-        seen_urls = set()
+    for src_url in sources:
+        try:
+            cmd = [
+                "curl", "-s", "-L", "--max-redirs", "3",
+                "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "-H", "Accept-Language: en-US,en;q=0.9",
+                src_url
+            ]
+            html_content = subprocess.check_output(cmd, timeout=8).decode("utf-8", errors="ignore")
+            soup = BeautifulSoup(html_content, "html.parser")
 
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if "/cricket-live-score/" in href and "-match-updates-" in href:
-                full_url = f"https://crex.com{href}" if href.startswith("/") else href
-                if full_url in seen_urls:
-                    continue
-                seen_urls.add(full_url)
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if "/cricket-live-score/" in href and "-match-updates-" in href:
+                    full_url = f"https://crex.com{href}" if href.startswith("/") else href
+                    if full_url in seen_urls:
+                        continue
+                    seen_urls.add(full_url)
 
-                raw_text = a.get_text(" ", strip=True)
-                slug_part = href.split("/cricket-live-score/")[-1].split("-match-updates-")[0]
-                formatted_slug = slug_part.replace("-", " ").title()
+                    raw_text = a.get_text(" ", strip=True)
+                    raw_text = re.sub(r'\s+', ' ', raw_text)
+                    slug_part = href.split("/cricket-live-score/")[-1].split("-match-updates-")[0]
+                    formatted_slug = slug_part.replace("-", " ").title()
 
-                title = re.sub(r'\s+', ' ', raw_text).strip() if raw_text and len(raw_text) > 6 else formatted_slug
-                if len(title) > 65:
-                    title = title[:62] + "..."
+                    raw_lower = raw_text.lower()
+                    if any(w in raw_lower for w in ["won by", "beat", "scores level", "drawn", "concluded"]):
+                        status_tag = "🏁 [RESULT]"
+                        priority = 2
+                    elif any(w in raw_lower for w in [" am", " pm", "tomorrow", "today", "starts at", "toss at", "upcoming"]):
+                        status_tag = "📅 [UPCOMING]"
+                        priority = 3
+                    elif any(w in raw_lower for w in ["need", "crr", "opt to", "trail by", "lead by"]) or re.search(r'\b(?:ov|overs)\b', raw_lower) or re.search(r'\b\d+[-/]\d+\b', raw_text):
+                        status_tag = "🔴 [LIVE]"
+                        priority = 1
+                    else:
+                        status_tag = "🏏 [MATCH]"
+                        priority = 4
 
-                matches.append({
-                    "title": title or formatted_slug,
-                    "url": full_url,
-                    "slug": slug_part
-                })
-        return matches[:15]
-    except Exception as e:
-        logger.warning(f"Error fetching live matches list: {e}")
-        return []
+                    clean_title = raw_text if raw_text and len(raw_text) > 5 else formatted_slug
+                    if len(clean_title) > 65:
+                        clean_title = clean_title[:62] + "..."
+
+                    matches.append({
+                        "title": f"{status_tag} {clean_title}",
+                        "url": full_url,
+                        "slug": slug_part,
+                        "priority": priority
+                    })
+        except Exception as e:
+            logger.warning(f"Error fetching live matches list from {src_url}: {e}")
+
+    # Sort with LIVE matches first, then completed RESULTS, then UPCOMING matches
+    matches.sort(key=lambda x: x.get("priority", 99))
+    return matches[:45]
 
 
-def resolve_match_url(user_input: str) -> tuple[str, Optional[str]]:
+def resolve_match_url(user_input: str, force_fuzzy: bool = False) -> tuple[str, Optional[str]]:
     """Smart Match Resolver: Maps any URL (CREX, Cricbuzz, Cricinfo, partial slug, or team query)
     to a valid, live CREX match updates feed."""
     raw = user_input.strip()
     if not raw:
         return raw, None
 
-    # 1. Direct valid CREX link with match ID
-    if "crex.com/cricket-live-score/" in raw and "-match-updates-" in raw:
+    # 1. Direct valid CREX link with match ID (unless force_fuzzy requested because link returned 404)
+    if not force_fuzzy and "crex.com/cricket-live-score/" in raw and "-match-updates-" in raw:
         return raw, None
 
     # 2. Extract match ID if present in any CREX URL (e.g. /social/...-11FL or -11FL)
-    crex_id_match = re.search(r'-([a-zA-Z0-9]{3,6})$', raw.rstrip('/'))
-    if "crex.com" in raw and crex_id_match:
-        mid = crex_id_match.group(1)
-        # Exclude 4-digit years like 2022, 2026
-        if not re.match(r'^(?:19|20)\d{2}$', mid):
-            slug_match = re.search(r'([a-zA-Z0-9\-]+?)-[a-zA-Z0-9]{3,6}$', raw.rstrip('/'))
-            if slug_match:
-                slug_base = slug_match.group(1).split("/")[-1]
-                slug_base = re.sub(r'-(?:match-updates|live-score|scorecard|info)$', '', slug_base)
-                reconstructed = f"https://crex.com/cricket-live-score/{slug_base}-match-updates-{mid}"
-                return reconstructed, "Auto-reconstructed CREX Live Feed URL"
+    if not force_fuzzy:
+        crex_id_match = re.search(r'-([a-zA-Z0-9]{3,6})$', raw.rstrip('/'))
+        if "crex.com" in raw and crex_id_match:
+            mid = crex_id_match.group(1)
+            # Exclude 4-digit years like 2022, 2026
+            if not re.match(r'^(?:19|20)\d{2}$', mid):
+                slug_match = re.search(r'([a-zA-Z0-9\-]+?)-[a-zA-Z0-9]{3,6}$', raw.rstrip('/'))
+                if slug_match:
+                    slug_base = slug_match.group(1).split("/")[-1]
+                    slug_base = re.sub(r'-(?:match-updates|live-score|scorecard|info)$', '', slug_base)
+                    reconstructed = f"https://crex.com/cricket-live-score/{slug_base}-match-updates-{mid}"
+                    return reconstructed, "Auto-reconstructed CREX Live Feed URL"
 
     # 3. Fuzzy match against current CREX live fixtures
     cleaned = re.sub(r'https?://[^\s/]+', '', raw)
-    tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+', cleaned)
-              if t.lower() not in ['https', 'http', 'com', 'www', 'cricket', 'live', 'score', 'scores', 'match', 'updates', 'series']]
+    stop_words = {
+        'https', 'http', 'com', 'www', 'cricket', 'live', 'score', 'scores', 'match', 'updates',
+        'series', 'vs', 'v', '1st', '2nd', '3rd', '4th', '5th', 't20', 'odi', 'test', '2024',
+        '2025', '2026', '2027', 'women', 'womens'
+    }
+    tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+', cleaned) if t.lower() not in stop_words]
 
     try:
         live_list = get_live_matches()
@@ -486,9 +647,9 @@ def resolve_match_url(user_input: str) -> tuple[str, Optional[str]]:
             score = 0
             for t in tokens:
                 if t in m_tokens:
-                    score += 3 if len(t) >= 3 else 1
+                    score += 4 if len(t) >= 3 else 1
                 elif any(t in mt for mt in m_tokens if len(t) >= 3):
-                    score += 1.5
+                    score += 2
 
             if score > best_score:
                 best_score = score
@@ -684,7 +845,7 @@ class CricketStreamingEngine:
         voice: Optional[str] = None,
         output_file: str = "broadcast_stream.mp4"
     ):
-        self.parser = CrexParser(url)
+        self.parser = CrexParser(url, lang=language)
         self.mode = mode
         self.stream_key = stream_key
         self.language = language
@@ -782,8 +943,8 @@ class CricketStreamingEngine:
 
             while self.is_running:
                 try:
-                    html_text = parser.fetch_html()
-                    fresh_data = parser.parse(html_text)
+                    html_text = self.parser.fetch_html()
+                    fresh_data = self.parser.parse(html_text)
                     match_data.update(fresh_data)
 
                     raw_balls = fresh_data.get("balls", [])
@@ -808,7 +969,7 @@ class CricketStreamingEngine:
 
                         human_res = commentator.humanize(
                             b.get("spoken_line") or b.get("commentary", ""),
-                            ball_info={**match_data, "runs": b.get("runs", ""), "over": b.get("over", "")},
+                            ball_info={**match_data, **b},
                             lang=self.language
                         )
                         spoken_text = human_res["spoken_text"]

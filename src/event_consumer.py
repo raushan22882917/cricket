@@ -67,20 +67,3 @@ class EventConsumer:
     async def stop_http_server(self):
         if self.runner:
             await self.runner.cleanup()
-
-    async def run_mock_replay(self, mock_file_path: str = str(config.MOCK_FEED_FILE), ball_delay_seconds: float = 7.0):
-        """Simulates live ball-by-ball stream from mock_match.json."""
-        logger.info(f"Starting mock match replay from {mock_file_path} with {ball_delay_seconds}s interval...")
-        try:
-            with open(mock_file_path, "r", encoding="utf-8") as f:
-                events = json.load(f)
-        except Exception as e:
-            logger.error(f"Could not load mock match file: {e}")
-            return
-
-        for i, ev_data in enumerate(events):
-            event = BallEvent.from_dict(ev_data)
-            logger.info(f"==> Ingesting Ball {event.over}.{event.ball} ({event.striker} facing {event.bowler})...")
-            await self.on_event(event)
-            if i < len(events) - 1:
-                await asyncio.sleep(ball_delay_seconds)

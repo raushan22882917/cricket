@@ -165,7 +165,11 @@
   function updateEngineStatus(data) {
     if (data.is_running) {
       statusBadge.className = "badge-status streaming";
-      statusText.textContent = "STREAMING LIVE";
+      if (data.has_youtube) {
+        statusText.textContent = "LIVE: YOUTUBE & WEB";
+      } else {
+        statusText.textContent = "STREAMING LIVE";
+      }
       btnStart.disabled = true;
       btnStop.disabled = false;
     } else {
@@ -273,7 +277,24 @@
     }
   }
 
+  const seenFeedKeys = new Set();
+
   function addFeedItem(item) {
+    if (!item || item.over === undefined || item.over === null) return;
+
+    const overStr = String(item.over).trim();
+    // Exclude studio/break/meta entries from the ball-by-ball delivery timeline
+    if (["pre-match", "result", "summary", "preview", "post-match", "break", "stumps", "update", "live"].includes(overStr.toLowerCase())) {
+      return;
+    }
+
+    // Strict deduplication by over number and delivery details
+    const itemKey = `${overStr}_${item.runs}_${(item.matchup || '').trim()}`;
+    if (seenFeedKeys.has(itemKey)) {
+      return;
+    }
+    seenFeedKeys.add(itemKey);
+
     const empty = feedList.querySelector(".feed-empty");
     if (empty) empty.remove();
 
@@ -404,6 +425,13 @@
     const lang = document.getElementById("langSelect").value;
     const key = document.getElementById("streamKey").value.trim();
 
+    // Prime HTML5 audio element on user click to unlock browser autoplay policy
+    try {
+      if (audioPlayer) {
+        audioPlayer.play().then(() => audioPlayer.pause()).catch(() => {});
+      }
+    } catch (_) {}
+
     if (!url) {
       showAlert("Please enter any match link (CREX, Cricbuzz, Cricinfo), team names (e.g. AUS vs ZIM), or pick an active match above.");
       return;
@@ -411,6 +439,12 @@
 
     btnStart.disabled = true;
     statusText.textContent = "CONNECTING FEED...";
+
+    // Reset client ball feed for new stream
+    seenFeedKeys.clear();
+    totalBalls = 0;
+    feedCount.textContent = "0 Balls";
+    feedList.innerHTML = '<div class="feed-empty"><div class="feed-empty-icon">🏏</div><p>Waiting for live ball updates from match feed...</p></div>';
 
     try {
       const resp = await fetch("/api/start", {

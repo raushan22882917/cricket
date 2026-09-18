@@ -1,28 +1,23 @@
 """Human Broadcaster Commentary Engine for Cricket Live Streams.
 
-Converts raw scraped ball-by-ball text or webhook payloads into television-quality
-color commentary in English (Ravi Shastri / Ian Bishop style) and Hindi (Aakash Chopra / Vivek Razdan style).
-Prevents robotic verbatim reading by injecting emotional cadence, natural breath pauses,
-and authentic cricket broadcast terminology.
+Speaks the exact ball-by-ball commentary text as published on the source site
+(CREX) in a human-like broadcast voice — no scripted rewriting of the words.
+Only the TTS delivery (rate/pitch/energy) is adapted per event type (wicket,
+six, four, dot ball) so the voice sounds alive without altering the wording.
 """
 import re
-import json
-import random
 import logging
-from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger("HumanCommentator")
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-PLAYERS_FILE = DATA_DIR / "players.json"
-HERITAGE_FILE = DATA_DIR / "heritage.json"
-
 
 class HumanCommentator:
-    """Intelligent commentary reformatter that turns plain text into authentic human broadcasts."""
+    """Classifies ball events for voice modulation and passes through the
+    exact source commentary text to be spoken."""
 
-    # Real Hindi cricket broadcast terms (preventing literal dictionary translation)
+    # Real Hindi cricket broadcast terms (used only for studio/situational lines
+    # that are generated locally, never for the site's own ball commentary).
     HINDI_CRICKET_TERMS = [
         (r'\bscores are levelled\b', 'स्कोर बराबर हो चुका है'),
         (r'\bscores level\b', 'स्कोर बराबर'),
@@ -59,108 +54,16 @@ class HumanCommentator:
         (r'\bmaximum\b', 'गगनचुंबी छक्का'),
     ]
 
-    ENGLISH_WICKET_HOOKS = [
-        "OH GONE! What an absolute ripper of a delivery!",
-        "BOWLED HIM! Knocked the castle over in breathtaking fashion!",
-        "IN THE AIR... AND TAKEN! A massive, massive breakthrough for the bowling side!",
-        "EDGED AND GONE! The finger goes up and that is the end of a big innings!",
-        "OUT! Timber! You miss, I hit — fast bowling at its absolute finest!"
-    ]
-
-    ENGLISH_SIX_HOOKS = [
-        "HIGH, HANDSOME, AND INTO THE STANDS! What an enormous hit!",
-        "BOOM! Dispatched into the second tier with sheer disdain!",
-        "STAND AND DELIVER! That ball has left the stadium, colossal six!",
-        "SWEET AS A NUT! Pure timing, straight out of the screws for a maximum!"
-    ]
-
-    ENGLISH_FOUR_HOOKS = [
-        "CRACKING SHOT! Pierces the infield and races away like a tracer bullet to the fence!",
-        "MAGNIFICENT TIMING! Leans into the drive and that is four written all over it!",
-        "DELICATE TOUCH! Guided expertly past third man with soft hands, boundary!",
-        "PULLED WITH AUTHORITY! That was asking to be hit and got the royal treatment!"
-    ]
-
-    ENGLISH_DOT_HOOKS = [
-        "Beaten all ends up! Superb seam presentation, asking serious questions outside off.",
-        "Solid defense right under the eyes, giving absolutely nothing away.",
-        "Play and a miss! Through to the keeper, tension ratcheting up here.",
-        "Tight, disciplined line. That's pure gold in the context of this game."
-    ]
-
-    ENGLISH_ROTATION_HOOKS = [
-        "Pushed into the gap, calls early, and they hustle through for a sharp single.",
-        "Worked off the hips into the leg side, comfortable single to turn the strike over.",
-        "Soft hands towards mid-wicket, excellent communication and running between the wickets.",
-        "Tapped gently into the cover region, sensible cricket to keep the scoreboard ticking."
-    ]
-
-    HINDI_WICKET_HOOKS = [
-        "ओहोहो! क्लीन बोल्ड! गिल्लियां हवा में नाचती हुई, बहुत बड़ा झटका यहाँ पर!",
-        "हवा में गेंद... और फील्डर नीचे, कोई गलती नहीं! शानदार कैच और पवेलियन का रास्ता दिखाया!",
-        "अरे वाह, क्या गेंद थी! बल्लेबाज के पास कोई जवाब नहीं, सीधा स्टंप्स पर जा टकराई!",
-        "बड़ा विकेट! दबाव काम कर गया, और एक अहम साझेदारी का अंत!"
-    ]
-
-    HINDI_SIX_HOOKS = [
-        "वाह भाई वाह! क्या टाइमिंग, क्या पावर! गेंद जा गिरी सीधे स्टैंड्स में, गगनचुंबी छक्का!",
-        "गेंद हवा में, और दर्शकों के बीच! इसे कहते हैं अधिकार भरा शॉट, छह रन!",
-        "खोल के रख दिया धागा! बल्ले के बीचों-बीच से निकली गेंद, लंबा छक्का!"
-    ]
-
-    HINDI_FOUR_HOOKS = [
-        "खूबसूरत टाइमिंग! नज़ाकत भरा शॉट और गेंद गोली की रफ़्तार से सीमा रेखा के पार, चार रन!",
-        "गैप में ढकेला, फील्डर के पास कोई मौका नहीं! दर्शनीय चौका!",
-        "नजाकत और ताकत का बेहतरीन संगम, गेंद सीधे बाउंड्री के पार चार रनों के लिए!"
-    ]
-
-    HINDI_DOT_HOOKS = [
-        "सटीक लाइन और लेंथ, बल्लेबाज पूरी तरह से चकमा खा गए, कोई रन नहीं.",
-        "शानदार वापसी गेंदबाज की, बल्लेबाज को क्रीज पर बिल्कुल बांध कर रखा.",
-        "बेहतरीन गेंदबाजी, डॉट गेंद के साथ दबाव और ज्यादा बढ़ता हुआ."
-    ]
-
-    HINDI_ROTATION_HOOKS = [
-        "हल्के हाथों से खेला, खाली जगह में गेंद और आसानी से एक रन पूरा किया, स्ट्राइक बदली.",
-        "गैप में ढकेला, तेजी से भागे और सुरक्षित क्रीज में पहुंचे, एक रन.",
-        "सूझबूझ भरी बल्लेबाजी, सिंगल्स के साथ स्कोरबोर्ड को लगातार चलायमान रखते हुए."
-    ]
-
     def __init__(self):
-        self.players = self._load_json(PLAYERS_FILE)
-        self.heritage = self._load_json(HERITAGE_FILE)
-
-    def _load_json(self, path: Path) -> Dict[str, Any]:
-        if path.exists():
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"Error loading {path}: {e}")
-        return {}
+        pass
 
     @classmethod
-    def clean_raw_crex(cls, text: str) -> Tuple[str, str, str]:
-        """Extracts bowler, batter, and core commentary action from raw CREX string."""
-        bowler = ""
-        batter = ""
-        clean = text
-
-        # Strip 'Over 10.4: ' or '10.4'
-        m_over = re.search(r'Over\s*([0-9\.]+)\s*:?\s*', clean, re.IGNORECASE)
-        if m_over:
-            clean = clean[m_over.end():].strip()
-
-        # Match 'Bowler to Batter'
-        m_matchup = re.match(r'([A-Za-z\s]+)\s+to\s+([A-Za-z\s]+)[\.\,\:\-]\s*', clean, re.IGNORECASE)
-        if m_matchup:
-            bowler = m_matchup.group(1).strip()
-            batter = m_matchup.group(2).strip()
-            clean = clean[m_matchup.end():].strip()
-
-        # Remove repetitive uppercase headers like 'SCORES ARE LEVELLED!'
-        clean = re.sub(r'^\s*([A-Z\s]{4,})\s*!\s*', r'\1. ', clean)
-        return bowler, batter, clean.strip()
+    def apply_hindi_terms(cls, text: str) -> str:
+        """Applies authentic Hindi cricket terminology replacements."""
+        res = text
+        for pattern, repl in cls.HINDI_CRICKET_TERMS:
+            res = re.sub(pattern, repl, res, flags=re.IGNORECASE)
+        return res
 
     @classmethod
     def detect_event_type(cls, text: str, runs: str = "") -> str:
@@ -182,112 +85,86 @@ class HumanCommentator:
         return "rotation"
 
     def humanize(self, raw_text: str, ball_info: Optional[Dict[str, Any]] = None, lang: str = "en") -> Dict[str, Any]:
-        """Turns raw event text into broadcaster-level human speech."""
+        """Classifies the ball event for voice modulation and returns the exact
+        source commentary text to be spoken (no rewriting of the words)."""
         ball_info = ball_info or {}
-        raw_bowler, raw_batter, core_commentary = self.clean_raw_crex(raw_text)
+        raw_text_clean = re.sub(r'<[^>]+>', '', raw_text).strip()
 
-        bowler = ball_info.get("bowler") or raw_bowler or "The bowler"
-        batter = ball_info.get("striker") or raw_batter or "The batter"
-        runs = ball_info.get("runs", "")
+        # Check if this is a studio announcement, pre-match preview, post-match summary, or break/stumps
+        over_tag = str(ball_info.get("over", "")).lower()
+        is_studio = (
+            bool(ball_info.get("is_studio"))
+            or over_tag in ["pre-match", "result", "summary", "preview", "post-match", "stumps", "break", "update"]
+            or any(k in raw_text_clean.lower() for k in [
+                "welcome", "won by", "scores are", "stumps", "innings break",
+                "lunch break", "tea break", "rain delay", "match update",
+                "match situation", "toss", "concludes", "goodbye", "live build-up",
+                "match wrap", "play update", "stand at", "at the crease"
+            ])
+        )
+        if is_studio:
+            if "stumps" in raw_text_clean.lower() or over_tag == "stumps":
+                badge = "⏸️ STUMPS"
+            elif any(w in raw_text_clean.lower() for w in ["break", "lunch", "tea", "rain"]) or over_tag == "break":
+                badge = "☕ BREAK"
+            elif "won by" in raw_text_clean.lower() or over_tag == "result":
+                badge = "🏆 RESULT"
+            elif "toss" in raw_text_clean.lower() or over_tag in ["pre-match", "preview"]:
+                badge = "⚡ PREVIEW"
+            else:
+                badge = "🎙️ STUDIO"
+            rate, pitch = "+3%", "+1Hz"
 
-        # Use last names for natural broadcast rhythm (e.g. "Pat Cummins" -> "Cummins")
+            if lang == "hi":
+                spoken = raw_text_clean
+                if not re.search(r'[ऀ-ॿ]', spoken):
+                    try:
+                        from cricket_streamer import FreeTranslator
+                        spoken = FreeTranslator().translate_to_hindi(spoken)
+                    except Exception:
+                        pass
+                spoken = self.apply_hindi_terms(spoken)
+            else:
+                spoken = raw_text_clean
+
+            return {
+                "spoken_text": spoken,
+                "event": "studio",
+                "badge": badge,
+                "rate": rate,
+                "pitch": pitch,
+                "emotion": "calm",
+                "bowler": ball_info.get("bowler", ""),
+                "batter": ball_info.get("striker", "")
+            }
+
+        # --- Real ball delivery: speak the EXACT commentary published on the source site ---
+        bowler = ball_info.get("bowler") or "Bowler"
+        batter = ball_info.get("striker") or "Batter"
         bowler_short = bowler.split()[-1] if bowler else "Bowler"
         batter_short = batter.split()[-1] if batter else "Batter"
 
-        event = self.detect_event_type(core_commentary + " " + raw_text, runs)
+        matchup = str(ball_info.get("matchup") or "").strip()
+        commentary_text = str(ball_info.get("commentary") or "").strip() or raw_text_clean
+        runs = ball_info.get("runs", "")
 
-        # Check player database for signature highlights
-        p_striker = self.players.get(batter, {})
-        p_bowler = self.players.get(bowler, {})
-        striker_signature = p_striker.get("signature_shot", "")
-        bowler_specialty = p_bowler.get("specialty", "")
+        event = self.detect_event_type(commentary_text, runs)
 
-        # Dynamic TTS Modulation (Pitch, Rate, Emotion Badge)
+        # Dynamic TTS Modulation only (Pitch, Rate, Emotion Badge) — wording is untouched
         if event == "wicket":
-            rate, pitch = "+9%", "+4Hz"
-            badge = "⚡ WICKET"
-            emotion = "high_energy"
+            rate, pitch, badge, emotion = "+9%", "+4Hz", "⚡ WICKET", "high_energy"
         elif event == "six":
-            rate, pitch = "+8%", "+3Hz"
-            badge = "🔥 MAXIMUM"
-            emotion = "high_energy"
+            rate, pitch, badge, emotion = "+8%", "+3Hz", "🔥 MAXIMUM", "high_energy"
         elif event == "four":
-            rate, pitch = "+6%", "+2Hz"
-            badge = "🎯 BOUNDARY"
-            emotion = "medium_energy"
+            rate, pitch, badge, emotion = "+6%", "+2Hz", "🎯 BOUNDARY", "medium_energy"
         elif event == "milestone":
-            rate, pitch = "+7%", "+3Hz"
-            badge = "💥 THRILLER"
-            emotion = "high_energy"
+            rate, pitch, badge, emotion = "+7%", "+3Hz", "💥 THRILLER", "high_energy"
         elif event == "dot":
-            rate, pitch = "+1%", "+0Hz"
-            badge = "🛡️ DOT BALL"
-            emotion = "calm"
+            rate, pitch, badge, emotion = "+1%", "+0Hz", "🛡️ DOT BALL", "calm"
         else:
-            rate, pitch = "+3%", "+1Hz"
-            badge = "🏏 ROTATION"
-            emotion = "normal"
+            rate, pitch, badge, emotion = "+3%", "+1Hz", "🏏 ROTATION", "normal"
 
-        if lang == "hi":
-            # --- HINDI HUMAN COMMENTARY (Aakash Chopra / Vivek Razdan style) ---
-            specialty_hi = "घातक यॉर्कर" if "yorker" in bowler_specialty.lower() else "शानदार स्विंग" if "swing" in bowler_specialty.lower() else "कसी हुई गेंदबाजी"
-            shot_hi = "कवर ड्राइव" if "cover" in striker_signature.lower() else "पुल शॉट" if "pull" in striker_signature.lower() else "हवाई शॉट"
-
-            if event == "wicket":
-                hook = random.choice(self.HINDI_WICKET_HOOKS)
-                if bowler_specialty:
-                    spoken = f"{hook} {bowler_short} की {specialty_hi}, और {batter_short} को पवेलियन लौटना ही होगा!"
-                else:
-                    spoken = f"{hook} {bowler_short} की घातक गेंदबाजी, {batter_short} पूरी तरह चकमा खा गए!"
-            elif event == "six":
-                hook = random.choice(self.HINDI_SIX_HOOKS)
-                if striker_signature:
-                    spoken = f"{hook} {batter_short} का वो ट्रेडमार्क {shot_hi}, गेंद को भेजा सीधे हवाई यात्रा पर!"
-                else:
-                    spoken = f"{hook} {batter_short} ने गेंद को भेजा सीधे हवाई यात्रा पर, क्या गजब का शॉट!"
-            elif event == "four":
-                hook = random.choice(self.HINDI_FOUR_HOOKS)
-                spoken = f"{hook} {batter_short} के बल्ले से निकला ये दिलकश चौका, फील्डर मूकदर्शक बने रहे!"
-            elif event == "milestone":
-                spoken = f"सांसें थाम देने वाला रोमांच! स्कोर यहाँ बराबर हो चुके हैं दोस्तों, {bowler_short} और {batter_short} के बीच कांटे की टक्कर!"
-            elif event == "dot":
-                hook = random.choice(self.HINDI_DOT_HOOKS)
-                spoken = f"{bowler_short} अपने रन-अप से आए... {hook}"
-            else:
-                hook = random.choice(self.HINDI_ROTATION_HOOKS)
-                spoken = f"{bowler_short} की ये गेंद... {batter_short} ने {hook}"
-
-            # If core commentary has specific dramatic highlights, adapt into authentic Hindi
-            if "scores are levelled" in core_commentary.lower():
-                spoken = f"स्कोर बराबर हो चुका है दोस्तों! {batter_short} ने गेंद को मिड-विकेट की दिशा में मोड़ा, तेजी से एक रन निकाला, और मुकाबला टाई हो चुका है!"
-        else:
-            # --- ENGLISH HUMAN COMMENTARY (Ravi Shastri / Ian Bishop style) ---
-            if event == "wicket":
-                hook = random.choice(self.ENGLISH_WICKET_HOOKS)
-                if bowler_specialty:
-                    spoken = f"{hook} That is {bowler_short}'s signature {bowler_specialty} doing the damage under extreme pressure!"
-                else:
-                    spoken = f"{hook} {bowler_short} strikes with sheer venom, and {batter_short} has to make the long walk back!"
-            elif event == "six":
-                hook = random.choice(self.ENGLISH_SIX_HOOKS)
-                if striker_signature:
-                    spoken = f"{hook} That trademark {striker_signature} from {batter_short}, launching it into the stratosphere!"
-                else:
-                    spoken = f"{hook} {batter_short} steps out and sends that soaring deep into the crowd!"
-            elif event == "four":
-                hook = random.choice(self.ENGLISH_FOUR_HOOKS)
-                spoken = f"{hook} Brilliant placement from {batter_short}, finding the fence with surgical precision!"
-            elif event == "milestone":
-                spoken = f"THE SCORES ARE LEVEL! High drama here at the ground — {batter_short} tucks it into the deep, and this game is right on the edge!"
-            elif event == "dot":
-                hook = random.choice(self.ENGLISH_DOT_HOOKS)
-                spoken = f"{bowler_short} steams in... {hook}"
-            else:
-                hook = random.choice(self.ENGLISH_ROTATION_HOOKS)
-                spoken = f"{bowler_short} into the attack... {batter_short} {hook}"
-
-            if "scores are levelled" in core_commentary.lower():
-                spoken = f"AND THE SCORES ARE TIED! Pushed through mid-wicket for a frantic single, and what an unbelievable climax we have here!"
+        spoken = f"{matchup}. {commentary_text}" if matchup else commentary_text
 
         return {
             "spoken_text": spoken,
