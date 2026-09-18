@@ -30,6 +30,7 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import edge_tts
+import aiohttp
 from bs4 import BeautifulSoup
 from pydub import AudioSegment
 from pydub.effects import normalize
@@ -87,6 +88,26 @@ class CrexParser:
     def __init__(self, url: str):
         self.url = url.strip()
 
+    async def fetch_html_async(self, session: Optional[aiohttp.ClientSession] = None) -> str:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        try:
+            if session and not session.closed:
+                async with session.get(self.url, headers=headers, timeout=aiohttp.ClientTimeout(total=3.5)) as resp:
+                    if resp.status == 200:
+                        return await resp.text()
+            else:
+                timeout = aiohttp.ClientTimeout(total=3.5)
+                async with aiohttp.ClientSession(timeout=timeout) as s:
+                    async with s.get(self.url, headers=headers) as resp:
+                        if resp.status == 200:
+                            return await resp.text()
+        except Exception as e:
+            logger.debug(f"Async fetch failed ({e}), falling back to curl")
+        return await asyncio.to_thread(self.fetch_html)
+
     def fetch_html(self) -> str:
         try:
             cmd = [
@@ -125,36 +146,77 @@ class CrexParser:
                 venue = v[0].get("v", venue)
                 break
 
-        # 2. Scorecard
-        score_card = soup.find("div", class_=lambda x: x and "live-score-card" in x)
-        total_runs = 92
-        total_wickets = 7
-        overs_str = "10.4"
-        batting_team = "PAK-W"
-        bowling_team = "THA-W"
-
-        if score_card:
-            sc_text = score_card.get_text(" ", strip=True)
-            score_match = re.search(r'([A-Za-z\-]+)\s*(\d+)-(\d+)\s*\(([0-9\.]+)\)', sc_text)
-            if score_match:
-                batting_team = score_match.group(1).strip()
-                total_runs = int(score_match.group(2))
-                total_wickets = int(score_match.group(3))
-                overs_str = score_match.group(4).strip()
-
-        # 3. Batsmen and Bowler
-        striker = "Umme Hani"
-        striker_runs = 2
-        striker_balls = 2
-        non_striker = "Eman Naseer"
-        non_striker_runs = 3
-        non_striker_balls = 3
-        bowler = "Thipatcha Puttawong"
-        bowler_wickets = 0
-        bowler_runs = 16
-        bowler_overs = 1.4
-
         full_text = soup.get_text(" | ", strip=True)
+
+        # Extract team names from URL slug if available as fallback
+        # e.g. /cricket-live-score/aus-vs-zim-2nd-odi-... or pak-w-vs-tha-w-...
+        slug_match = re.search(r'/cricket-live-score/([a-zA-Z0-9\-]+?)-vs-([a-zA-Z0-9\-]+?)-', self.url)
+        url_team1 = slug_match.group(1).upper() if slug_match else ""
+        url_team2 = slug_match.group(2).upper() if slug_match else ""
+
+        batting_team = url_team1 or "TEAM 1"
+        bowling_team = url_team2 or "TEAM 2"
+        total_runs = 0
+        total_wickets = 0
+        overs_str = "0.0"
+
+        # 2. Multi-Strategy Dynamic Scorecard Extraction (No hardcoded score defaults)
+        # Strategy A: Extract from page Title (e.g. "ZIM 66-2 (16.4) (Innocent Kaia 7(17)) ...")
+        m_title = re.search(r'\b([A-Za-z\-]{2,7})\s+(\d+)[-/](\d+)\s*\(([0-9\.]+)\)', title)
+        if m_title:
+            batting_team = m_title.group(1).strip()
+            total_runs = int(m_title.group(2))
+            total_wickets = int(m_title.group(3))
+            overs_str = m_title.group(4).strip()
+        else:
+            # Strategy B: Extract from live-score-card div
+            score_card = soup.find("div", class_=lambda x: x and "live-score-card" in x)
+            if score_card:
+                sc_text = score_card.get_text(" ", strip=True)
+                score_match = re.search(r'\b([A-Za-z\-]{2,7})\s*(\d+)[-/](\d+)\s*\(([0-9\.]+)\)', sc_text)
+                if score_match:
+                    batting_team = score_match.group(1).strip()
+                    total_runs = int(score_match.group(2))
+                    total_wickets = int(score_match.group(3))
+                    overs_str = score_match.group(4).strip()
+
+            # Strategy C: Extract pipe-delimited score from full_text
+            if total_runs == 0 and total_wickets == 0:
+                m_pipe = re.search(r'\b([A-Za-z\-]{2,7})\s*\|\s*(\d+)[-/](\d+)\s*\|\s*\(([0-9\.]+)\)', full_text)
+                if m_pipe:
+                    batting_team = m_pipe.group(1).strip()
+                    total_runs = int(m_pipe.group(2))
+                    total_wickets = int(m_pipe.group(3))
+                    overs_str = m_pipe.group(4).strip()
+
+            # Strategy D: Extract standard score from full_text
+            if total_runs == 0 and total_wickets == 0:
+                m_std = re.search(r'\b([A-Za-z\-]{2,7})\s+(\d+)[-/](\d+)\s*\(([0-9\.]+)\)', full_text)
+                if m_std:
+                    batting_team = m_std.group(1).strip()
+                    total_runs = int(m_std.group(2))
+                    total_wickets = int(m_std.group(3))
+                    overs_str = m_std.group(4).strip()
+
+        # Update bowling team based on match url teams
+        if url_team1 and url_team2:
+            if batting_team.upper() == url_team1.upper():
+                bowling_team = url_team2
+            elif batting_team.upper() == url_team2.upper():
+                bowling_team = url_team1
+
+        # 3. Batsmen and Bowler (Dynamic with neutral fallbacks)
+        striker = "Batter 1"
+        striker_runs = 0
+        striker_balls = 0
+        non_striker = "Batter 2"
+        non_striker_runs = 0
+        non_striker_balls = 0
+        bowler = "Bowler"
+        bowler_wickets = 0
+        bowler_runs = 0
+        bowler_overs = 0.0
+
         over_idx = full_text.find("OVER ")
         section = full_text[over_idx:over_idx + 250] if over_idx != -1 else full_text
 
@@ -246,9 +308,40 @@ class CrexParser:
         m_overs = re.findall(r"Over\s*(\d+)\s*\|\s*([0-9\sWwB\|\+\.]+?)\s*\|\s*=\s*(\d+)", full_text)
         this_over_balls = [x.strip() for x in m_overs[-1][1].split("|")] if m_overs else []
 
-        # Opponent score
-        t2_m = re.search(r"([A-Za-z\-]+)\s*\|\s*\(([0-9\.]+)\)\s*\|\s*(\d+-\d+)", full_text)
-        team2_score = f"{t2_m.group(1)} {t2_m.group(3)} ({t2_m.group(2)} ov)" if t2_m else ""
+        # Opponent score (find opponent team score, excluding active batting team and player names)
+        team2_score = ""
+        opp_target = None
+        if url_team1 and url_team2:
+            opp_target = url_team2 if batting_team.upper() == url_team1.upper() else url_team1
+
+        if opp_target:
+            # Look specifically for opp_target score
+            m_target = re.search(rf"\b({opp_target})\s*\|\s*(?:\(([0-9\.]+)\)\s*\|\s*)?(\d+[-/]\d+)(?:\s*\|\s*\(([0-9\.]+)\))?", full_text, re.IGNORECASE)
+            if m_target:
+                ov = m_target.group(2) or m_target.group(4) or ""
+                team2_score = f"{m_target.group(1).upper()} {m_target.group(3)} ({ov} ov)" if ov else f"{m_target.group(1).upper()} {m_target.group(3)}"
+            else:
+                m_target_std = re.search(rf"\b({opp_target})\s+(\d+[-/]\d+)\s*\(([0-9\.]+)(?:\s*ov)?\)", full_text, re.IGNORECASE)
+                if m_target_std:
+                    team2_score = f"{m_target_std.group(1).upper()} {m_target_std.group(2)} ({m_target_std.group(3)} ov)"
+
+        if not team2_score:
+            opp_candidates = re.findall(r"\b([A-Za-z\-]{2,7})\s*\|\s*(?:\(([0-9\.]+)\)\s*\|\s*)?(\d+[-/]\d+)(?:\s*\|\s*\(([0-9\.]+)\))?", full_text)
+            for cand in opp_candidates:
+                c_team = cand[0].strip()
+                if c_team.upper() != batting_team.upper() and c_team.upper() not in ["LIVE", "OVER", "CRR", "ECON", "TOTAL", bowler.upper()]:
+                    ov = cand[1] or cand[3] or ""
+                    sc = cand[2]
+                    team2_score = f"{c_team} {sc} ({ov} ov)" if ov else f"{c_team} {sc}"
+                    break
+
+        if not team2_score:
+            opp_std = re.findall(r"\b([A-Za-z\-]{2,7})\s+(\d+[-/]\d+)\s*\(([0-9\.]+)(?:\s*ov)?\)", full_text)
+            for cand in opp_std:
+                c_team = cand[0].strip()
+                if c_team.upper() != batting_team.upper() and c_team.upper() not in ["LIVE", "OVER", "CRR", "ECON", "TOTAL", bowler.upper()]:
+                    team2_score = f"{c_team} {cand[1]} ({cand[2]} ov)"
+                    break
 
         # Current Run Rate (CRR)
         overs_float = float(overs_str) if overs_str and overs_str.replace('.', '', 1).isdigit() else 0.0
@@ -330,6 +423,23 @@ class FastTTS:
         # Studio presence boost & broadcast normalization
         seg = normalize(seg) + 1.5
         return seg.raw_data
+
+    async def speak_mp3(self, text: str, rate: Optional[str] = None, pitch: Optional[str] = None) -> bytes:
+        """Direct ultra-fast MP3 generation with zero format conversion overhead."""
+        clean_text = re.sub(r'<[^>]+>', '', text).strip()
+        words = clean_text.split()
+        if len(words) > 35:
+            clean_text = " ".join(words[:35]) + "..."
+
+        target_rate = rate or ("+10%" if self.language == "hi" else "+8%")
+        target_pitch = pitch or "+1Hz"
+
+        comm = edge_tts.Communicate(clean_text, self.voice, rate=target_rate, pitch=target_pitch)
+        buf = bytearray()
+        async for chunk in comm.stream():
+            if chunk["type"] == "audio":
+                buf.extend(chunk["data"])
+        return bytes(buf)
 
 
 

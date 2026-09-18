@@ -41,7 +41,7 @@
       <div class="control-inputs">
         <div class="input-group url-group">
           <label for="matchUrl">Live Match URL</label>
-          <input type="text" id="matchUrl" placeholder="https://crex.com/cricket-live-score/..." value="https://crex.com/cricket-live-score/pak-w-vs-tha-w-2nd-qtr-final-womens-asian-games-t20-2026-match-updates-13Q0">
+          <input type="text" id="matchUrl" placeholder="Paste any CREX live match link here (e.g. https://crex.com/cricket-live-score/...)" value="">
         </div>
         <div class="input-group lang-group">
           <label for="langSelect">Broadcast Language</label>
@@ -78,18 +78,18 @@
           <div class="live-pill">
             <span class="live-blink"></span> LIVE
           </div>
-          <div id="matchTitle" class="match-title">Loading Match Data...</div>
-          <div id="matchVenue" class="match-venue">Korogi Sports Park, Nisshin</div>
+          <div id="matchTitle" class="match-title">Ready to Broadcast Live</div>
+          <div id="matchVenue" class="match-venue">International Cricket Stadium</div>
         </div>
 
         <div class="sb-main">
           <div class="score-box">
-            <div id="battingTeam" class="team-code">PAK-W</div>
-            <div id="teamScore" class="main-score">92/7</div>
-            <div id="oversCount" class="overs-text">OVERS: 10.4</div>
+            <div id="battingTeam" class="team-code">--</div>
+            <div id="teamScore" class="main-score">--/--</div>
+            <div id="oversCount" class="overs-text">OVERS: 0.0</div>
             <div class="rate-pills">
-              <span id="crrBadge" class="rate-badge">CRR: 8.62</span>
-              <span id="oppScore" class="opp-score">THA-W 91-4</span>
+              <span id="crrBadge" class="rate-badge">CRR: 0.00</span>
+              <span id="oppScore" class="opp-score" style="display:none;"></span>
             </div>
           </div>
           <div class="players-box">
@@ -97,30 +97,30 @@
               <span class="pointer">▶</span>
               <div class="player-info-col">
                 <div class="player-main-line">
-                  <span id="strikerName" class="p-name">Umme Hani</span>
-                  <span id="strikerFigures" class="p-fig">2 (2)</span>
+                  <span id="strikerName" class="p-name">Striker</span>
+                  <span id="strikerFigures" class="p-fig">0 (0)</span>
                 </div>
-                <div id="strikerMeta" class="p-meta">4s: 0 • 6s: 0 • SR: 100.00</div>
+                <div id="strikerMeta" class="p-meta">4s: 0 • 6s: 0 • SR: 0.00</div>
               </div>
             </div>
             <div class="player-row non-striker">
               <span class="pointer">&nbsp;&nbsp;</span>
               <div class="player-info-col">
                 <div class="player-main-line">
-                  <span id="nonStrikerName" class="p-name">Eman Naseer</span>
-                  <span id="nonStrikerFigures" class="p-fig">3 (3)</span>
+                  <span id="nonStrikerName" class="p-name">Non-Striker</span>
+                  <span id="nonStrikerFigures" class="p-fig">0 (0)</span>
                 </div>
-                <div id="nonStrikerMeta" class="p-meta">4s: 0 • 6s: 0 • SR: 100.00</div>
+                <div id="nonStrikerMeta" class="p-meta">4s: 0 • 6s: 0 • SR: 0.00</div>
               </div>
             </div>
             <div class="bowler-row">
               <span class="bowler-label">BOWLING:</span>
               <div class="bowler-info-col">
                 <div class="bowler-main-line">
-                  <span id="bowlerName" class="b-name">Thipatcha Puttawong</span>
-                  <span id="bowlerFigures" class="b-fig">0-16 (1.4 ov)</span>
+                  <span id="bowlerName" class="b-name">Bowler</span>
+                  <span id="bowlerFigures" class="b-fig">0-0 (0.0 ov)</span>
                 </div>
-                <div id="bowlerEcon" class="b-meta">Econ: 9.60</div>
+                <div id="bowlerEcon" class="b-meta">Econ: 0.00</div>
               </div>
             </div>
           </div>
@@ -130,26 +130,19 @@
         <div class="sb-meta-bar">
           <div class="meta-item">
             <span class="meta-label">P'SHIP:</span>
-            <span id="partnershipText" class="meta-val">4 (4b)</span>
+            <span id="partnershipText" class="meta-val">--</span>
           </div>
           <div class="meta-item">
             <span class="meta-label">LAST WKT:</span>
-            <span id="lastWktText" class="meta-val">Tuba Hassan 13(7)</span>
+            <span id="lastWktText" class="meta-val">--</span>
           </div>
           <div class="meta-item this-over-item">
             <span class="meta-label">THIS OVER:</span>
-            <div id="thisOverContainer" class="this-over-bubbles">
-              <span class="ball-bubble">1</span>
-              <span class="ball-bubble">1</span>
-              <span class="ball-bubble">1</span>
-              <span class="ball-bubble">1</span>
-            </div>
+            <div id="thisOverContainer" class="this-over-bubbles"></div>
           </div>
         </div>
 
-        <div id="alertBanner" class="alert-banner">
-          Pakistan Women won by 3 wickets 🏆
-        </div>
+        <div id="alertBanner" class="alert-banner hidden"></div>
       </section>
 
 

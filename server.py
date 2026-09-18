@@ -89,115 +89,152 @@ class BroadcastHub:
         return {"ok": True}
 
     async def _run_broadcast_pipeline(self, url: str, lang: str, stream_key: str):
-        logger.info(f"Starting broadcast pipeline for URL: {url} (Lang: {lang.upper()})")
+        logger.info(f"Starting ultra-fast real-time broadcast for URL: {url} (Lang: {lang.upper()})")
         parser = CrexParser(url)
-        translator = FreeTranslator() if lang == "hi" else None
         tts = FastTTS(language=lang)
 
+        # Queue bounded to prevent backlog and maintain max 3s lag
+        ball_queue = asyncio.Queue(maxsize=2)
         seen_balls = set()
         first_run = True
 
-        try:
-            logger.info("Entering live real-time CREX polling loop...")
+        async def voice_worker():
+            """Synthesizes and broadcasts neural commentary audio without blocking real-time scraper."""
             while self.is_running:
                 try:
-                    html_text = parser.fetch_html()
-                    fresh_data = parser.parse(html_text)
-                    self.latest_match_state = fresh_data
+                    event = await asyncio.wait_for(ball_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    break
 
-                    # Broadcast real-time match state to all browser clients
-                    await self.broadcast_ws("match_state", fresh_data)
+                try:
+                    b = event["ball"]
+                    fresh_data = event["fresh_data"]
+                    ball_over = b.get("over", "Live")
+                    ball_runs = b.get("runs", "1")
 
-                    raw_balls = fresh_data.get("balls", [])
-                    new_events = []
+                    # Humanize commentary line
+                    human_res = commentator.humanize(
+                        b.get("spoken_line") or b.get("commentary", ""),
+                        ball_info={**fresh_data, "runs": ball_runs, "over": ball_over},
+                        lang=lang
+                    )
+                    spoken_text = human_res["spoken_text"]
+                    badge = human_res["badge"]
+                    rate = human_res["rate"]
+                    pitch = human_res["pitch"]
 
-                    for b in reversed(raw_balls):
-                        b_key = f"{b.get('over')}_{b.get('runs')}_{b.get('commentary')[:30]}"
-                        if b_key not in seen_balls:
-                            seen_balls.add(b_key)
-                            new_events.append(b)
+                    self.latest_commentary = spoken_text
 
-                    if first_run:
-                        first_run = False
-                        # On startup, broadcast the latest 2 balls
-                        new_events = new_events[-2:] if len(new_events) >= 2 else new_events
+                    # 1. Instantly push timeline feed item (zero latency)
+                    await self.broadcast_ws("feed_item", {
+                        "over": ball_over,
+                        "runs": ball_runs,
+                        "matchup": f"{human_res['bowler']} to {human_res['batter']}",
+                        "badge": badge,
+                        "commentary": spoken_text
+                    })
 
-                    for b in new_events:
-                        if not self.is_running:
-                            break
+                    # 2. Fast neural audio synthesis directly to MP3 bytes (sub-second)
+                    mp3_data = await tts.speak_mp3(spoken_text, rate=rate, pitch=pitch)
+                    if not mp3_data:
+                        continue
 
-                        ball_over = b.get("over", "Live")
-                        ball_runs = b.get("runs", "1")
+                    filename = f"voice_{int(time.time())}_{ball_over.replace('.', '_')}.mp3"
+                    file_path = RECORDINGS_DIR / filename
+                    with open(file_path, "wb") as f:
+                        f.write(mp3_data)
 
-                        # Humanize raw text into television-grade broadcast commentary
-                        human_res = commentator.humanize(
-                            b.get("spoken_line") or b.get("commentary", ""),
-                            ball_info={**fresh_data, "runs": ball_runs, "over": ball_over},
-                            lang=lang
-                        )
-                        spoken_text = human_res["spoken_text"]
-                        badge = human_res["badge"]
-                        rate = human_res["rate"]
-                        pitch = human_res["pitch"]
+                    # Estimate duration (~16000 bytes/sec at 128kbps)
+                    duration = max(2.5, len(mp3_data) / 16000.0)
 
-                        self.latest_commentary = spoken_text
+                    audio_url = f"/recordings/{filename}"
+                    rec_item = {
+                        "filename": filename,
+                        "url": audio_url,
+                        "title": f"[{badge}] Ball {ball_over} ({lang.upper()})",
+                        "time": time.strftime("%I:%M:%S %p"),
+                        "duration": round(duration, 1)
+                    }
+                    self.recordings_meta.insert(0, rec_item)
 
-                        # Push feed item to timeline with human badge
-                        await self.broadcast_ws("feed_item", {
-                            "over": ball_over,
-                            "runs": ball_runs,
-                            "matchup": f"{human_res['bowler']} to {human_res['batter']}",
-                            "badge": badge,
-                            "commentary": spoken_text
-                        })
+                    # 3. Broadcast audio and speaking event to browser
+                    await self.broadcast_ws("commentary", {
+                        "text": spoken_text,
+                        "badge": badge,
+                        "audio_url": audio_url,
+                        "duration": round(duration, 1)
+                    })
+                    await self.broadcast_ws("recording_ready", rec_item)
 
-                        # Synthesize neural voice with human emotional pacing
-                        t0 = time.time()
-                        pcm = await tts.speak(spoken_text, rate=rate, pitch=pitch)
-                        duration = max(3.0, len(pcm) / (44100 * 4))
+                    # Sleep only for the voice duration (shorten if queue is waiting)
+                    pending = ball_queue.qsize()
+                    wait_time = max(1.5, duration - (0.6 if pending > 0 else 0.0))
+                    await asyncio.sleep(wait_time)
 
-                        # Save MP3 audio file into /recordings/
-                        filename = f"voice_{int(time.time())}_{ball_over.replace('.', '_')}.mp3"
-                        file_path = RECORDINGS_DIR / filename
-
-                        # Save MP3 from PCM via pydub
-                        from pydub import AudioSegment
-                        import io
-                        seg = AudioSegment(
-                            data=pcm,
-                            sample_width=2,
-                            frame_rate=44100,
-                            channels=2
-                        )
-                        seg.export(str(file_path), format="mp3", bitrate="128k")
-
-                        audio_url = f"/recordings/{filename}"
-                        rec_item = {
-                            "filename": filename,
-                            "url": audio_url,
-                            "title": f"[{badge}] Ball {ball_over} ({lang.upper()})",
-                            "time": time.strftime("%I:%M:%S %p"),
-                            "duration": duration
-                        }
-                        self.recordings_meta.insert(0, rec_item)
-
-                        # Broadcast audio URL and speaking event to browser
-                        await self.broadcast_ws("commentary", {
-                            "text": spoken_text,
-                            "badge": badge,
-                            "audio_url": audio_url,
-                            "duration": duration
-                        })
-                        await self.broadcast_ws("recording_ready", rec_item)
-
-                        # Allow voice to finish playing
-                        await asyncio.sleep(duration + 1.2)
-
+                except asyncio.CancelledError:
+                    break
                 except Exception as e:
-                    logger.warning(f"Error in live scrape poll: {e}")
+                    logger.warning(f"Voice worker exception: {e}")
 
-                # Real-time poll interval (4 seconds)
-                await asyncio.sleep(4)
+        # Start decoupled voice worker task
+        voice_task = asyncio.create_task(voice_worker())
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        connector = aiohttp.TCPConnector(limit=10, ttl_dns_roundrobin=60, keepalive_timeout=60)
+
+        try:
+            logger.info("Entering ultra-fast live real-time CREX polling loop (1.5s interval)...")
+            async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
+                while self.is_running:
+                    try:
+                        # Ultra-fast non-blocking fetch (50-100ms)
+                        html_text = await parser.fetch_html_async(session=session)
+                        if not html_text:
+                            await asyncio.sleep(1.0)
+                            continue
+
+                        fresh_data = parser.parse(html_text)
+                        self.latest_match_state = fresh_data
+
+                        # Instantly push fresh score and state to all browser clients (<50ms)
+                        await self.broadcast_ws("match_state", fresh_data)
+
+                        raw_balls = fresh_data.get("balls", [])
+                        new_events = []
+
+                        for b in reversed(raw_balls):
+                            b_key = f"{b.get('over')}_{b.get('runs')}_{b.get('commentary')[:30]}"
+                            if b_key not in seen_balls:
+                                seen_balls.add(b_key)
+                                new_events.append(b)
+
+                        if first_run:
+                            first_run = False
+                            # On start, only queue the single most recent ball to eliminate any lag
+                            if new_events:
+                                new_events = [new_events[-1]]
+
+                        for b in new_events:
+                            # Drop oldest if queue is full to enforce real-time max 3s lag
+                            if ball_queue.full():
+                                try:
+                                    ball_queue.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    pass
+                            await ball_queue.put({"ball": b, "fresh_data": fresh_data})
+
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as e:
+                        logger.warning(f"Error in fast scrape poll: {e}")
+
+                    # 1.5s poll rate for true real-time live streaming
+                    await asyncio.sleep(1.5)
 
         except asyncio.CancelledError:
             logger.info("Broadcast pipeline cancelled by user.")
@@ -205,6 +242,12 @@ class BroadcastHub:
             logger.error(f"Broadcast pipeline error: {e}", exc_info=True)
         finally:
             self.is_running = False
+            if voice_task and not voice_task.done():
+                voice_task.cancel()
+                try:
+                    await voice_task
+                except asyncio.CancelledError:
+                    pass
             await self.broadcast_ws("status", {"is_running": False})
 
 

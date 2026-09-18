@@ -78,8 +78,7 @@ class CrexScraper:
             t_text = soup.title.get_text()
             match_title = t_text.split(",")[0]
 
-        # 2. Extract Scoreboard from Live Score Card
-        score_card = soup.find("div", class_=lambda x: x and "live-score-card" in x)
+        # 2. Extract Scoreboard using Multi-Strategy Fallback
         total_runs = 0
         total_wickets = 0
         over = 0
@@ -87,17 +86,28 @@ class CrexScraper:
         batting_team = team1_name[:5].upper()
         bowling_team = team2_name[:5].upper()
 
-        if score_card:
-            sc_text = score_card.get_text(" ", strip=True)
-            # Example: PAK-W 92-7 (10.4) ... THA-W (11.0) 91-4
-            score_match = re.search(r'([A-Za-z\-]+)\s*(\d+)-(\d+)\s*\(([0-9\.]+)\)', sc_text)
-            if score_match:
-                batting_team = score_match.group(1).strip()
-                total_runs = int(score_match.group(2))
-                total_wickets = int(score_match.group(3))
-                overs_float = float(score_match.group(4))
-                over = int(overs_float)
-                ball = int(round((overs_float - over) * 10))
+        # Check page title first (always present and real-time on CREX)
+        page_title = soup.title.get_text() if soup.title else ""
+        m_title = re.search(r'\b([A-Za-z\-]{2,7})\s+(\d+)[-/](\d+)\s*\(([0-9\.]+)\)', page_title)
+        if m_title:
+            batting_team = m_title.group(1).strip()
+            total_runs = int(m_title.group(2))
+            total_wickets = int(m_title.group(3))
+            overs_float = float(m_title.group(4))
+            over = int(overs_float)
+            ball = int(round((overs_float - over) * 10))
+        else:
+            score_card = soup.find("div", class_=lambda x: x and "live-score-card" in x)
+            if score_card:
+                sc_text = score_card.get_text(" ", strip=True)
+                score_match = re.search(r'\b([A-Za-z\-]{2,7})\s*(\d+)[-/](\d+)\s*\(([0-9\.]+)\)', sc_text)
+                if score_match:
+                    batting_team = score_match.group(1).strip()
+                    total_runs = int(score_match.group(2))
+                    total_wickets = int(score_match.group(3))
+                    overs_float = float(score_match.group(4))
+                    over = int(overs_float)
+                    ball = int(round((overs_float - over) * 10))
 
         # 3. Extract Active Batsmen and Bowler from page text
         striker = "Batter 1"

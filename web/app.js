@@ -133,7 +133,15 @@
     }
     if (data.overs) oversCount.textContent = `OVERS: ${data.overs}`;
     if (data.crr && crrBadge) crrBadge.textContent = `CRR: ${data.crr}`;
-    if (data.team2_score && oppScore) oppScore.textContent = data.team2_score;
+    if (oppScore) {
+      if (data.team2_score) {
+        oppScore.textContent = data.team2_score;
+        oppScore.style.display = "inline-block";
+      } else {
+        oppScore.textContent = "";
+        oppScore.style.display = "none";
+      }
+    }
 
     if (data.striker) strikerName.textContent = data.striker;
     if (data.striker_runs !== undefined) strikerFigures.textContent = `${data.striker_runs} (${data.striker_balls || 0})`;
