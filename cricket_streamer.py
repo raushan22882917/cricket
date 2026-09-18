@@ -233,8 +233,10 @@ class CrexParser:
             "non_striker_balls": non_striker_balls,
             "bowler": bowler,
             "bowler_figures": f"{bowler_wickets}-{bowler_runs} ({bowler_overs} ov)",
-            "paragraphs": paragraphs
+            "paragraphs": paragraphs,
+            "balls": balls_data
         }
+
 
 
 class FastTTS:
@@ -477,36 +479,67 @@ class CricketStreamingEngine:
         audio_thread = threading.Thread(target=self._audio_writer_thread, args=(audio_fd,), daemon=True)
         audio_thread.start()
 
-        # Commentary worker task
+        # Commentary worker task (Continuous real-time polling)
         async def commentary_worker():
-            para_list = match_data["paragraphs"]
-            if max_paragraphs:
-                para_list = para_list[:max_paragraphs]
+            seen_balls = set()
+            first_run = True
 
-            for idx, paragraph in enumerate(para_list):
-                if not self.is_running:
-                    break
+            while self.is_running:
+                try:
+                    html_text = parser.fetch_html()
+                    fresh_data = parser.parse(html_text)
+                    match_data.update(fresh_data)
 
-                # Transform raw scraped text into human color commentary
-                human_res = commentator.humanize(paragraph, ball_info=match_data, lang=self.language)
-                spoken_text = human_res["spoken_text"]
-                self.active_alert = human_res["badge"]
-                self.current_subtitle = spoken_text
+                    raw_balls = fresh_data.get("balls", [])
+                    new_events = []
 
-                logger.info(f"🎙️ [{human_res['badge']}] Line [{idx+1}/{len(para_list)}] [{self.language.upper()}]: {spoken_text}")
+                    # Iterate over balls chronologically
+                    for b in reversed(raw_balls):
+                        b_key = f"{b.get('over')}_{b.get('runs')}_{b.get('commentary')[:30]}"
+                        if b_key not in seen_balls:
+                            seen_balls.add(b_key)
+                            new_events.append(b)
 
-                # Generate humanized neural voice with dynamic emotional rate and pitch
-                t0 = time.time()
-                pcm = await self.tts.speak(spoken_text, rate=human_res["rate"], pitch=human_res["pitch"])
-                duration = len(pcm) / (44100 * 4)
-                logger.info(f"Broadcast voice ready ({duration:.1f}s, rate={human_res['rate']}) in {time.time()-t0:.2f}s")
-                self.audio_queue.put(pcm)
+                    if first_run:
+                        first_run = False
+                        # On first connect, play the latest 2 balls or max_paragraphs
+                        limit = max_paragraphs if max_paragraphs else 2
+                        new_events = new_events[-limit:] if len(new_events) >= limit else new_events
 
-                # Allow voice to finish speaking before next paragraph
-                await asyncio.sleep(max(3.0, duration + 1.0))
-                self.active_alert = None
+                    for b in new_events:
+                        if not self.is_running:
+                            break
 
-            logger.info("All commentary paragraphs completed.")
+                        human_res = commentator.humanize(
+                            b.get("spoken_line") or b.get("commentary", ""),
+                            ball_info={**match_data, "runs": b.get("runs", ""), "over": b.get("over", "")},
+                            lang=self.language
+                        )
+                        spoken_text = human_res["spoken_text"]
+                        self.active_alert = human_res["badge"]
+                        self.current_subtitle = spoken_text
+
+                        logger.info(f"🎙️ [{human_res['badge']}] Ball {b.get('over')} [{self.language.upper()}]: {spoken_text}")
+
+                        pcm = await self.tts.speak(spoken_text, rate=human_res["rate"], pitch=human_res["pitch"])
+                        duration = len(pcm) / (44100 * 4)
+                        self.audio_queue.put(pcm)
+
+                        await asyncio.sleep(max(3.0, duration + 1.0))
+                        self.active_alert = None
+
+                    if max_paragraphs:
+                        # Fixed paragraph test run requested
+                        break
+
+                except Exception as e:
+                    logger.warning(f"Error during real-time scrape poll: {e}")
+
+                # Poll interval for real-time live cricket feed (4s)
+                await asyncio.sleep(4)
+
+            logger.info("Real-time commentary stream cycle finished.")
+
 
 
         c_task = asyncio.create_task(commentary_worker())
