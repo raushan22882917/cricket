@@ -20,13 +20,22 @@
   const battingTeam = document.getElementById("battingTeam");
   const teamScore = document.getElementById("teamScore");
   const oversCount = document.getElementById("oversCount");
+  const crrBadge = document.getElementById("crrBadge");
+  const oppScore = document.getElementById("oppScore");
   const strikerName = document.getElementById("strikerName");
   const strikerFigures = document.getElementById("strikerFigures");
+  const strikerMeta = document.getElementById("strikerMeta");
   const nonStrikerName = document.getElementById("nonStrikerName");
   const nonStrikerFigures = document.getElementById("nonStrikerFigures");
+  const nonStrikerMeta = document.getElementById("nonStrikerMeta");
   const bowlerName = document.getElementById("bowlerName");
   const bowlerFigures = document.getElementById("bowlerFigures");
+  const bowlerEcon = document.getElementById("bowlerEcon");
+  const partnershipText = document.getElementById("partnershipText");
+  const lastWktText = document.getElementById("lastWktText");
+  const thisOverContainer = document.getElementById("thisOverContainer");
   const alertBanner = document.getElementById("alertBanner");
+
 
   const onAirBadge = document.getElementById("onAirBadge");
   const onAirText = document.getElementById("onAirText");
@@ -123,23 +132,52 @@
       teamScore.textContent = `${data.total_runs}/${data.total_wickets}`;
     }
     if (data.overs) oversCount.textContent = `OVERS: ${data.overs}`;
+    if (data.crr && crrBadge) crrBadge.textContent = `CRR: ${data.crr}`;
+    if (data.team2_score && oppScore) oppScore.textContent = data.team2_score;
 
     if (data.striker) strikerName.textContent = data.striker;
     if (data.striker_runs !== undefined) strikerFigures.textContent = `${data.striker_runs} (${data.striker_balls || 0})`;
+    if (strikerMeta) {
+      strikerMeta.textContent = `4s: ${data.striker_fours ?? 0} • 6s: ${data.striker_sixes ?? 0} • SR: ${data.striker_sr || '0.00'}`;
+    }
 
     if (data.non_striker) nonStrikerName.textContent = data.non_striker;
     if (data.non_striker_runs !== undefined) nonStrikerFigures.textContent = `${data.non_striker_runs} (${data.non_striker_balls || 0})`;
+    if (nonStrikerMeta) {
+      nonStrikerMeta.textContent = `4s: ${data.non_striker_fours ?? 0} • 6s: ${data.non_striker_sixes ?? 0} • SR: ${data.non_striker_sr || '0.00'}`;
+    }
 
     if (data.bowler) bowlerName.textContent = data.bowler;
     if (data.bowler_figures) bowlerFigures.textContent = data.bowler_figures;
+    if (bowlerEcon) bowlerEcon.textContent = `Econ: ${data.bowler_econ || '0.00'}`;
 
-    if (data.alert) {
-      alertBanner.textContent = data.alert;
+    if (partnershipText && data.partnership) partnershipText.textContent = `${data.partnership} runs`;
+    if (lastWktText && data.last_wicket) lastWktText.textContent = data.last_wicket;
+
+    // Render this over ball bubbles
+    if (thisOverContainer && data.this_over_balls && Array.isArray(data.this_over_balls)) {
+      thisOverContainer.innerHTML = "";
+      data.this_over_balls.forEach((b) => {
+        const bubble = document.createElement("span");
+        let cls = "ball-bubble";
+        if (b === "4") cls += " four";
+        else if (b === "6") cls += " six";
+        else if (b.toUpperCase().includes("W")) cls += " wicket";
+        bubble.className = cls;
+        bubble.textContent = b;
+        thisOverContainer.appendChild(bubble);
+      });
+    }
+
+    const bannerText = data.alert || data.status || "";
+    if (bannerText) {
+      alertBanner.textContent = bannerText;
       alertBanner.classList.remove("hidden");
     } else {
       alertBanner.classList.add("hidden");
     }
   }
+
 
   function handleCommentary(data) {
     speakingText.textContent = `"${data.text}"`;

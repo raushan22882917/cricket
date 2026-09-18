@@ -217,25 +217,79 @@ class CrexParser:
                 f"Score stands at {batting_team} {total_runs} for {total_wickets} in {overs_str} overs."
             ]
 
+        # Match status / alert banner
+        m_status = re.search(r"(?:\|\s*)([A-Za-z\s]+won by [0-9\sA-Za-z🏆]+|SCORES ARE LEVELLED|Need \d+ runs? in \d+ balls?|Innings Break)", full_text, re.IGNORECASE)
+        match_status = m_status.group(1).strip() if m_status else ""
+
+        # Batters detailed statistics (4s, 6s, Strike Rate)
+        b_matches = re.findall(r"([A-Za-z\s\-]+?)\s*\|\s*(\d+)\s*\|\s*\((\d+)\)\s*\|\s*4s:\s*\|\s*(\d+)\s*\|\s*6s:\s*\|\s*(\d+)\s*\|\s*SR:\s*\|\s*([0-9\.]+)", full_text)
+        striker_fours = int(b_matches[0][3]) if len(b_matches) >= 1 else 0
+        striker_sixes = int(b_matches[0][4]) if len(b_matches) >= 1 else 0
+        striker_sr = b_matches[0][5] if len(b_matches) >= 1 else "0.0"
+
+        non_striker_fours = int(b_matches[1][3]) if len(b_matches) >= 2 else 0
+        non_striker_sixes = int(b_matches[1][4]) if len(b_matches) >= 2 else 0
+        non_striker_sr = b_matches[1][5] if len(b_matches) >= 2 else "0.0"
+
+        # Bowler economy
+        b_econ_match = re.search(r"([A-Za-z\s\-]+?)\s*\|\s*(\d+-\d+)\s*\|\s*\(([0-9\.]+)\)\s*\|\s*Econ:\s*\|\s*([0-9\.]+)", full_text)
+        bowler_econ = b_econ_match.group(4) if b_econ_match else "0.00"
+
+        # Partnership & Last Wicket
+        m_pship = re.search(r"P\x27?ship\s*:\s*\|\s*([0-9\(\)]+)", full_text)
+        partnership = m_pship.group(1) if m_pship else ""
+
+        m_lastw = re.search(r"Last Wkt\s*:\s*\|\s*([A-Za-z\s\-]+?)\s*\|\s*([0-9\(\)]+)", full_text)
+        last_wicket = f"{m_lastw.group(1).strip()} {m_lastw.group(2).strip()}" if m_lastw else ""
+
+        # Current / recent over ball bubbles
+        m_overs = re.findall(r"Over\s*(\d+)\s*\|\s*([0-9\sWwB\|\+\.]+?)\s*\|\s*=\s*(\d+)", full_text)
+        this_over_balls = [x.strip() for x in m_overs[-1][1].split("|")] if m_overs else []
+
+        # Opponent score
+        t2_m = re.search(r"([A-Za-z\-]+)\s*\|\s*\(([0-9\.]+)\)\s*\|\s*(\d+-\d+)", full_text)
+        team2_score = f"{t2_m.group(1)} {t2_m.group(3)} ({t2_m.group(2)} ov)" if t2_m else ""
+
+        # Current Run Rate (CRR)
+        overs_float = float(overs_str) if overs_str and overs_str.replace('.', '', 1).isdigit() else 0.0
+        c_ov = int(overs_float)
+        b_rem = int(round((overs_float - c_ov) * 10))
+        tot_balls = c_ov * 6 + b_rem
+        crr = f"{round((total_runs / (tot_balls / 6.0)), 2):.2f}" if tot_balls > 0 else "0.00"
+
         return {
             "title": clean_title,
             "venue": venue,
+            "status": match_status,
             "batting_team": batting_team,
             "bowling_team": bowling_team,
             "total_runs": total_runs,
             "total_wickets": total_wickets,
             "overs": overs_str,
+            "crr": crr,
+            "team2_score": team2_score,
             "striker": striker,
             "striker_runs": striker_runs,
             "striker_balls": striker_balls,
+            "striker_fours": striker_fours,
+            "striker_sixes": striker_sixes,
+            "striker_sr": striker_sr,
             "non_striker": non_striker,
             "non_striker_runs": non_striker_runs,
             "non_striker_balls": non_striker_balls,
+            "non_striker_fours": non_striker_fours,
+            "non_striker_sixes": non_striker_sixes,
+            "non_striker_sr": non_striker_sr,
             "bowler": bowler,
             "bowler_figures": f"{bowler_wickets}-{bowler_runs} ({bowler_overs} ov)",
+            "bowler_econ": bowler_econ,
+            "partnership": partnership,
+            "last_wicket": last_wicket,
+            "this_over_balls": this_over_balls,
             "paragraphs": paragraphs,
             "balls": balls_data
         }
+
 
 
 
@@ -356,23 +410,36 @@ class FastOverlayRenderer:
         draw.line([0, s_y, self.width, s_y], fill=(40, 80, 150), width=3)
 
         # Left Score Pill
-        draw.rectangle([0, s_y, 250, self.height], fill=(16, 38, 76))
-        draw.text((25, s_y + 16), f"{state['batting_team']}", fill=(255, 215, 0), font=self.font_large)
-        draw.text((120, s_y + 16), f"{state['total_runs']}/{state['total_wickets']}", fill=(255, 255, 255), font=self.font_large)
-        draw.text((25, s_y + 60), f"OVERS: {state['overs']}", fill=(200, 220, 240), font=self.font_medium)
+        draw.rectangle([0, s_y, 260, self.height], fill=(16, 38, 76))
+        draw.text((25, s_y + 14), f"{state['batting_team']}", fill=(255, 215, 0), font=self.font_large)
+        draw.text((125, s_y + 14), f"{state['total_runs']}/{state['total_wickets']}", fill=(255, 255, 255), font=self.font_large)
+        draw.text((25, s_y + 58), f"OV: {state['overs']} • CRR: {state.get('crr', '0.00')}", fill=(200, 220, 240), font=self.font_medium)
+        if state.get("team2_score"):
+            draw.text((25, s_y + 84), f"vs {state['team2_score']}", fill=(140, 180, 220), font=self.font_small)
 
         # Middle Batsmen
-        draw.text((280, s_y + 20), f"▶ {state['striker']}", fill=(255, 255, 255), font=self.font_medium)
-        draw.text((490, s_y + 20), f"{state['striker_runs']} ({state['striker_balls']})", fill=(255, 215, 0), font=self.font_medium)
-        draw.text((280, s_y + 55), f"   {state['non_striker']}", fill=(200, 210, 230), font=self.font_medium)
-        draw.text((490, s_y + 55), f"{state['non_striker_runs']} ({state['non_striker_balls']})", fill=(200, 210, 230), font=self.font_medium)
+        s_meta = f"4s:{state.get('striker_fours', 0)} 6s:{state.get('striker_sixes', 0)}"
+        draw.text((280, s_y + 16), f"▶ {state['striker']}", fill=(255, 255, 255), font=self.font_medium)
+        draw.text((475, s_y + 16), f"{state['striker_runs']} ({state['striker_balls']})", fill=(255, 215, 0), font=self.font_medium)
+        draw.text((545, s_y + 18), s_meta, fill=(150, 180, 210), font=self.font_small)
+
+        ns_meta = f"4s:{state.get('non_striker_fours', 0)} 6s:{state.get('non_striker_sixes', 0)}"
+        draw.text((280, s_y + 50), f"   {state['non_striker']}", fill=(200, 210, 230), font=self.font_medium)
+        draw.text((475, s_y + 50), f"{state['non_striker_runs']} ({state['non_striker_balls']})", fill=(200, 210, 230), font=self.font_medium)
+        draw.text((545, s_y + 52), ns_meta, fill=(130, 160, 190), font=self.font_small)
+
+        # Partnership row
+        pship_str = f"P'SHIP: {state.get('partnership', '')}  |  LAST WKT: {state.get('last_wicket', '')}"
+        draw.text((280, s_y + 84), pship_str, fill=(140, 170, 210), font=self.font_small)
 
         # Right Bowler
         bx = self.width - 340
         draw.line([bx - 15, s_y + 10, bx - 15, self.height - 10], fill=(30, 50, 80), width=1)
-        draw.text((bx, s_y + 16), "BOWLING", fill=(140, 170, 210), font=self.font_small)
-        draw.text((bx, s_y + 40), f"{state['bowler']}", fill=(255, 255, 255), font=self.font_medium)
-        draw.text((bx, s_y + 68), f"{state['bowler_figures']}", fill=(255, 215, 0), font=self.font_medium)
+        draw.text((bx, s_y + 14), "BOWLING", fill=(140, 170, 210), font=self.font_small)
+        draw.text((bx, s_y + 36), f"{state['bowler']}", fill=(255, 255, 255), font=self.font_medium)
+        draw.text((bx, s_y + 64), f"{state['bowler_figures']}", fill=(255, 215, 0), font=self.font_medium)
+        draw.text((bx + 160, s_y + 66), f"Econ: {state.get('bowler_econ', '0.00')}", fill=(160, 190, 220), font=self.font_small)
+
 
         return img.tobytes()
 
