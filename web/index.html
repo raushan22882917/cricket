@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🏏 Cricket AI Live Broadcaster</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Top Navigation Header -->
+  <header class="navbar">
+    <div class="nav-left">
+      <span class="logo-icon">🏏</span>
+      <div class="brand">
+        <h1>CRICKET AI BROADCASTER</h1>
+        <span class="tagline">Real-Time Commentary & Live Streaming Engine</span>
+      </div>
+    </div>
+    <div class="nav-right">
+      <div id="statusBadge" class="badge-status idle">
+        <span class="status-dot"></span>
+        <span id="statusText">IDLE</span>
+      </div>
+      <div id="wsBadge" class="badge-conn disconnected">
+        <span class="conn-dot"></span>
+        <span id="wsText">DISCONNECTED</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <!-- Live Match Banner & Controls -->
+    <section class="control-card glass-panel">
+      <div class="control-header">
+        <h2>Match Feed Configuration</h2>
+        <span class="control-sub">Paste any CREX match link to automatically stream live ball-by-ball commentary</span>
+      </div>
+      <div class="control-inputs">
+        <div class="input-group url-group">
+          <label for="matchUrl">Live Match URL</label>
+          <input type="text" id="matchUrl" placeholder="https://crex.com/cricket-live-score/..." value="https://crex.com/cricket-live-score/pak-w-vs-tha-w-2nd-qtr-final-womens-asian-games-t20-2026-match-updates-13Q0">
+        </div>
+        <div class="input-group lang-group">
+          <label for="langSelect">Broadcast Language</label>
+          <select id="langSelect">
+            <option value="hi" selected>हिन्दी (Hindi - Madhur Voice)</option>
+            <option value="en">English (Indian Accent - Prabhat Voice)</option>
+          </select>
+        </div>
+        <div class="input-group key-group">
+          <label for="streamKey">YouTube Stream Key (Optional)</label>
+          <input type="password" id="streamKey" placeholder="Paste YouTube Live RTMP Key">
+        </div>
+      </div>
+      <div class="control-actions">
+        <button id="btnStart" class="btn btn-primary">
+          <span class="btn-icon">▶</span> START LIVE BROADCAST
+        </button>
+        <button id="btnStop" class="btn btn-danger" disabled>
+          <span class="btn-icon">⏹</span> STOP BROADCAST
+        </button>
+        <div class="audio-control">
+          <button id="btnAudioToggle" class="btn btn-secondary">
+            <span id="audioIcon">🔊</span> <span id="audioText">Mute Audio</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Hero Section: Scoreboard + Live On-Air Studio -->
+    <div class="hero-grid">
+      <!-- Television Scorecard Overlay -->
+      <section class="scoreboard-card glass-panel">
+        <div class="sb-top">
+          <div class="live-pill">
+            <span class="live-blink"></span> LIVE
+          </div>
+          <div id="matchTitle" class="match-title">Loading Match Data...</div>
+          <div id="matchVenue" class="match-venue">Korogi Sports Park, Nisshin</div>
+        </div>
+
+        <div class="sb-main">
+          <div class="score-box">
+            <div id="battingTeam" class="team-code">PAK-W</div>
+            <div id="teamScore" class="main-score">92/7</div>
+            <div id="oversCount" class="overs-text">OVERS: 10.4</div>
+          </div>
+          <div class="players-box">
+            <div class="player-row striker">
+              <span class="pointer">▶</span>
+              <span id="strikerName" class="p-name">Umme Hani</span>
+              <span id="strikerFigures" class="p-fig">2 (2)</span>
+            </div>
+            <div class="player-row non-striker">
+              <span class="pointer">&nbsp;&nbsp;</span>
+              <span id="nonStrikerName" class="p-name">Eman Naseer</span>
+              <span id="nonStrikerFigures" class="p-fig">3 (3)</span>
+            </div>
+            <div class="bowler-row">
+              <span class="bowler-label">BOWLING:</span>
+              <span id="bowlerName" class="b-name">Thipatcha Puttawong</span>
+              <span id="bowlerFigures" class="b-fig">0-16 (1.4 ov)</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="alertBanner" class="alert-banner hidden">
+          MATCH WON • PAKISTAN WOMEN 🏆
+        </div>
+      </section>
+
+      <!-- Broadcaster Live Studio -->
+      <section class="studio-card glass-panel">
+        <div class="studio-header">
+          <div class="on-air-badge" id="onAirBadge">
+            <span class="mic-icon">🎙️</span>
+            <span id="onAirText">STUDIO READY</span>
+          </div>
+          <!-- Animated audio visualizer bars -->
+          <div class="waveform" id="waveform">
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+          </div>
+        </div>
+
+        <div class="speaking-box">
+          <div class="speaking-label">CURRENT COMMENTARY (ON-AIR VOICE):</div>
+          <div id="speakingText" class="speaking-text">
+            "Connecting to stream... Commentary lines will appear here in real time as the AI speaks."
+          </div>
+        </div>
+
+        <!-- Audio Player -->
+        <div class="studio-player">
+          <audio id="liveAudio" preload="auto"></audio>
+          <div class="player-status">
+            <span class="status-indicator"></span>
+            <span id="playerStateText">Voice synthesizer online (auto-play enabled)</span>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Bottom Split: Live Commentary Feed & Stored Voice Archives -->
+    <div class="bottom-grid">
+      <!-- Ball-by-Ball Live Timeline -->
+      <section class="feed-card glass-panel">
+        <div class="feed-header">
+          <h3>Ball-by-Ball Live Commentary</h3>
+          <span id="feedCount" class="badge-count">0 Balls</span>
+        </div>
+        <div id="feedList" class="feed-list">
+          <!-- Dynamically populated ball items -->
+          <div class="feed-empty">Waiting for match events to stream...</div>
+        </div>
+      </section>
+
+      <!-- Stored Voice Clips & Download Archive -->
+      <section class="archive-card glass-panel">
+        <div class="archive-header">
+          <h3>Stored Voice Recordings Archive</h3>
+          <span id="archiveCount" class="badge-count">0 Clips</span>
+        </div>
+        <div id="archiveList" class="archive-list">
+          <!-- Dynamically populated recording items with audio play & download buttons -->
+          <div class="feed-empty">No voice recordings generated yet.</div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <span>Cricket AI Broadcast Engine • Powered by Neural TTS & Fast Scraper • Ready for Railway & YouTube Live</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
