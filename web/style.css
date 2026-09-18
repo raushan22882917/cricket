@@ -629,6 +629,19 @@ body {
 .feed-runs-badge.six { background: #d97706; color: #fff; }
 .feed-runs-badge.wicket { background: #b91c1c; color: #fff; }
 
+.feed-event-badge {
+  font-family: var(--font-heading);
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  letter-spacing: 0.5px;
+}
+
+
 .feed-matchup {
   font-size: 12px;
   color: #94a3b8;

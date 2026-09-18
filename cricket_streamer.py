@@ -34,12 +34,16 @@ from bs4 import BeautifulSoup
 from pydub import AudioSegment
 from pydub.effects import normalize
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from src.human_commentator import commentator
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S"
 )
 logger = logging.getLogger("CricketStreamer")
+
 
 
 class FreeTranslator:
@@ -246,13 +250,16 @@ class FastTTS:
             # English broadcaster
             self.voice = "en-IN-PrabhatNeural"
 
-    async def speak(self, text: str) -> bytes:
+    async def speak(self, text: str, rate: Optional[str] = None, pitch: Optional[str] = None) -> bytes:
         clean_text = re.sub(r'<[^>]+>', '', text).strip()
         words = clean_text.split()
-        if len(words) > 35:
-            clean_text = " ".join(words[:35]) + "..."
+        if len(words) > 40:
+            clean_text = " ".join(words[:40]) + "..."
 
-        comm = edge_tts.Communicate(clean_text, self.voice, rate="+5%", pitch="+0Hz")
+        target_rate = rate or ("+7%" if self.language == "hi" else "+6%")
+        target_pitch = pitch or "+1Hz"
+
+        comm = edge_tts.Communicate(clean_text, self.voice, rate=target_rate, pitch=target_pitch)
         buf = bytearray()
         async for chunk in comm.stream():
             if chunk["type"] == "audio":
@@ -264,8 +271,10 @@ class FastTTS:
         import io
         seg = AudioSegment.from_file(io.BytesIO(buf), format="mp3")
         seg = seg.set_frame_rate(44100).set_channels(2).set_sample_width(2)
-        seg = normalize(seg) + 1.0
+        # Studio presence boost & broadcast normalization
+        seg = normalize(seg) + 1.5
         return seg.raw_data
+
 
 
 class FastOverlayRenderer:
@@ -478,30 +487,19 @@ class CricketStreamingEngine:
                 if not self.is_running:
                     break
 
-                # Translate to Hindi if requested
-                spoken_text = paragraph
-                if self.language == "hi" and self.translator:
-                    spoken_text = self.translator.translate_to_hindi(paragraph)
-
-                logger.info(f"🎙️ Broadcasting Line [{idx+1}/{len(para_list)}] [{self.language.upper()}]: {spoken_text[:80]}...")
+                # Transform raw scraped text into human color commentary
+                human_res = commentator.humanize(paragraph, ball_info=match_data, lang=self.language)
+                spoken_text = human_res["spoken_text"]
+                self.active_alert = human_res["badge"]
                 self.current_subtitle = spoken_text
 
-                # Check if paragraph has wicket or boundary
-                lower_p = paragraph.lower()
-                if "wicket" in lower_p or "out" in lower_p or "won" in lower_p or "विकेट" in lower_p or "जीत" in lower_p:
-                    self.active_alert = "MATCH WON • PAKISTAN WOMEN 🏆" if ("won" in lower_p or "जीत" in lower_p) else "WICKET!"
-                elif "four" in lower_p or "boundary" in lower_p or "चौका" in lower_p:
-                    self.active_alert = "FOUR! BOUNDARY!"
-                elif "six" in lower_p or "maximum" in lower_p or "छक्का" in lower_p:
-                    self.active_alert = "SIX! MAXIMUM!"
-                else:
-                    self.active_alert = None
+                logger.info(f"🎙️ [{human_res['badge']}] Line [{idx+1}/{len(para_list)}] [{self.language.upper()}]: {spoken_text}")
 
-                # Generate speech
+                # Generate humanized neural voice with dynamic emotional rate and pitch
                 t0 = time.time()
-                pcm = await self.tts.speak(spoken_text)
+                pcm = await self.tts.speak(spoken_text, rate=human_res["rate"], pitch=human_res["pitch"])
                 duration = len(pcm) / (44100 * 4)
-                logger.info(f"Spoken voice ready ({duration:.1f}s) in {time.time()-t0:.2f}s")
+                logger.info(f"Broadcast voice ready ({duration:.1f}s, rate={human_res['rate']}) in {time.time()-t0:.2f}s")
                 self.audio_queue.put(pcm)
 
                 # Allow voice to finish speaking before next paragraph
@@ -509,6 +507,7 @@ class CricketStreamingEngine:
                 self.active_alert = None
 
             logger.info("All commentary paragraphs completed.")
+
 
         c_task = asyncio.create_task(commentary_worker())
 

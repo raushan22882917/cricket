@@ -143,7 +143,7 @@
 
   function handleCommentary(data) {
     speakingText.textContent = `"${data.text}"`;
-    setTalkingState(true);
+    setTalkingState(true, data.badge);
 
     // If an audio file URL is provided, play it
     if (data.audio_url && !isAudioMuted) {
@@ -152,7 +152,7 @@
         console.warn("Auto-play prevented by browser policy (interact with page first):", e);
         playerStateText.textContent = "Click Mute/Unmute to enable audio playback";
       });
-      playerStateText.textContent = `Broadcasting voice clip (${data.duration ? data.duration.toFixed(1) + 's' : ''})`;
+      playerStateText.textContent = `Broadcasting: ${data.badge || '🎙️ Live Voice'} (${data.duration ? data.duration.toFixed(1) + 's' : ''})`;
     }
 
     // Reset talking state after duration
@@ -162,10 +162,10 @@
     }, durMs);
   }
 
-  function setTalkingState(isTalking) {
+  function setTalkingState(isTalking, badge = null) {
     if (isTalking) {
       onAirBadge.className = "on-air-badge active";
-      onAirText.textContent = "ON AIR (AI VOICE)";
+      onAirText.textContent = badge ? `${badge} • ON AIR` : "ON AIR (COMMENTATOR)";
       waveform.className = "waveform active";
     } else {
       onAirBadge.className = "on-air-badge";
@@ -189,9 +189,14 @@
     else if (item.runs === "6") badgeClass += " six";
     else if (String(item.runs).toUpperCase().includes("W")) badgeClass += " wicket";
 
+    const eventBadgeHtml = item.badge ? `<span class="feed-event-badge">${item.badge}</span>` : "";
+
     el.innerHTML = `
       <div class="feed-item-top">
-        <span class="feed-over-badge">OVER ${item.over}</span>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="feed-over-badge">OVER ${item.over}</span>
+          ${eventBadgeHtml}
+        </div>
         <span class="${badgeClass}">${item.runs} RUN${item.runs === "1" ? "" : "S"}</span>
       </div>
       <div class="feed-matchup">${item.matchup || ""}</div>
@@ -200,6 +205,7 @@
 
     feedList.prepend(el);
   }
+
 
   function addArchiveItem(item) {
     const empty = archiveList.querySelector(".feed-empty");

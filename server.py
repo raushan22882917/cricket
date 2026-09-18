@@ -18,6 +18,7 @@ import aiohttp_cors
 
 # Import existing core modules
 from cricket_streamer import CrexParser, FreeTranslator, FastTTS, FastOverlayRenderer
+from src.human_commentator import commentator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -110,13 +111,6 @@ class BroadcastHub:
                 if not self.is_running:
                     break
 
-                # Translate if Hindi requested
-                spoken_text = paragraph
-                if lang == "hi" and translator:
-                    spoken_text = translator.translate_to_hindi(paragraph)
-
-                self.latest_commentary = spoken_text
-
                 # Extract over / runs if available
                 ball_over = "Live"
                 ball_runs = "1"
@@ -124,17 +118,27 @@ class BroadcastHub:
                 if m_over:
                     ball_over = m_over.group(1)
 
-                # Push feed item to timeline
+                # Humanize raw text into television-grade broadcast commentary
+                human_res = commentator.humanize(paragraph, ball_info={**match_data, "runs": ball_runs, "over": ball_over}, lang=lang)
+                spoken_text = human_res["spoken_text"]
+                badge = human_res["badge"]
+                rate = human_res["rate"]
+                pitch = human_res["pitch"]
+
+                self.latest_commentary = spoken_text
+
+                # Push feed item to timeline with human badge
                 await self.broadcast_ws("feed_item", {
                     "over": ball_over,
                     "runs": ball_runs,
-                    "matchup": match_data.get("bowler", "Bowler") + " to " + match_data.get("striker", "Batter"),
+                    "matchup": f"{human_res['bowler']} to {human_res['batter']}",
+                    "badge": badge,
                     "commentary": spoken_text
                 })
 
-                # Synthesize neural voice
+                # Synthesize neural voice with human emotional pacing
                 t0 = time.time()
-                pcm = await tts.speak(spoken_text)
+                pcm = await tts.speak(spoken_text, rate=rate, pitch=pitch)
                 duration = max(3.0, len(pcm) / (44100 * 4))
 
                 # Save MP3 audio file into /recordings/
@@ -156,7 +160,7 @@ class BroadcastHub:
                 rec_item = {
                     "filename": filename,
                     "url": audio_url,
-                    "title": f"Ball {ball_over} Commentary ({lang.upper()})",
+                    "title": f"[{badge}] Ball {ball_over} ({lang.upper()})",
                     "time": time.strftime("%I:%M:%S %p"),
                     "duration": duration
                 }
@@ -165,6 +169,7 @@ class BroadcastHub:
                 # Broadcast audio URL and speaking event to browser
                 await self.broadcast_ws("commentary", {
                     "text": spoken_text,
+                    "badge": badge,
                     "audio_url": audio_url,
                     "duration": duration
                 })
@@ -172,6 +177,7 @@ class BroadcastHub:
 
                 # Allow voice to finish playing
                 await asyncio.sleep(duration + 1.2)
+
 
             logger.info("Broadcast sequence finished.")
 
