@@ -7,20 +7,141 @@ A simple, single-server web app that turns a live CREX match page into:
 
 ---
 
-## ⚡ Quick Start
+---
 
-```bash
-python -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python server.py
-```
+## ⚡ Step-by-Step Installation Guide (Beginner Friendly)
 
-Open `http://localhost:8088`, then:
-1. Pick a live match from the dropdown, or paste any CREX/Cricbuzz/Cricinfo match link (or just type team names).
-2. Choose the commentary language (English / Hindi).
-3. Optionally paste a YouTube Live RTMP stream key to broadcast there at the same time.
-4. Click **Start**.
+If you have never set up a Python project before, follow the steps below for your operating system. Every command can be copied and pasted directly into your terminal.
+
+> [!TIP]
+> **Don't want to install anything on your computer?**
+> Use the **[Deploy to Render](#-deploy-to-render)** button below to run the app in the cloud 100% free with one click!
 
 ---
+
+### 🍏 Mac & Linux Users
+
+#### Step 1: Open Terminal
+- **Mac**: Press `Cmd + Space`, type `Terminal`, and press Enter.
+- **Linux**: Press `Ctrl + Alt + T`.
+
+#### Step 2: Clone & open project folder
+```bash
+git clone https://github.com/raushan22882917/cricket.git
+cd cricket
+```
+
+#### Step 3: Create and activate a virtual environment
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+*(You will see `(.venv)` appear at the beginning of your terminal prompt).*
+
+#### Step 4: Install dependencies
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#### Step 5: (Optional) Install FFmpeg
+*Only needed if you plan to broadcast live to YouTube RTMP:*
+- **Mac** (using [Homebrew](https://brew.sh)):
+  ```bash
+  brew install ffmpeg
+  ```
+- **Ubuntu / Debian Linux**:
+  ```bash
+  sudo apt update && sudo apt install -y ffmpeg
+  ```
+
+#### Step 6: Start the app
+```bash
+python3 server.py
+```
+
+#### Step 7: Open in your browser
+Open your web browser (Chrome, Safari, Edge) and go to:
+👉 **[http://localhost:8088](http://localhost:8088)**
+
+---
+
+### 🪟 Windows Users
+
+#### Step 1: Open PowerShell or Command Prompt
+- Press the `Windows key`, type `PowerShell`, and click **Windows PowerShell**.
+
+#### Step 2: Clone & open project folder
+```powershell
+git clone https://github.com/raushan22882917/cricket.git
+cd cricket
+```
+
+#### Step 3: Create a virtual environment
+```powershell
+python -m venv .venv
+```
+
+#### Step 4: Activate the virtual environment
+- In **PowerShell**:
+  ```powershell
+  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+  .venv\Scripts\Activate.ps1
+  ```
+- *Or in Command Prompt (CMD)*:
+  ```cmd
+  .venv\Scripts\activate.bat
+  ```
+*(You will see `(.venv)` in front of your command prompt line).*
+
+#### Step 5: Install dependencies
+```powershell
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#### Step 6: Start the app
+```powershell
+python server.py
+```
+
+#### Step 7: Open in your browser
+Open your browser and visit:
+👉 **[http://localhost:8088](http://localhost:8088)**
+
+---
+
+### 🐳 Docker Users (All Platforms)
+
+If you already have [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed, you don't need Python or FFmpeg installed on your machine:
+
+```bash
+# 1. Build the Docker image
+docker build -t cricket-broadcaster .
+
+# 2. Run the container
+docker run -p 8088:10000 cricket-broadcaster
+```
+Then open: **[http://localhost:8088](http://localhost:8088)**
+
+---
+
+## 🎮 How to Use the Web App
+
+Once the web page is open in your browser:
+1. **Choose a Match**:
+   - Pick any ongoing game from the **Live Matches** dropdown list, or
+   - Paste a link from CREX / Cricbuzz / ESPNcricinfo, or
+   - Simply type team names (e.g. `India vs Australia`).
+2. **Select Commentary Language**:
+   - Choose **English** or **Hindi**.
+3. **Select Voice Engine**:
+   - **Edge-TTS**: 100% Free, no API key needed, natural neural voices.
+   - **Sarvam AI**: Ultra-realistic Indian English / Hindi voices (enter your Sarvam key or set in `.env`).
+4. **YouTube Live (Optional)**:
+   - Paste your YouTube Live RTMP Stream Key if you also want to stream video + audio to YouTube.
+5. Click **Start Broadcast** and listen to live ball-by-ball voice commentary!
+
 
 ## 🚀 Deploy to Render
 
