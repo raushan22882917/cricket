@@ -66,48 +66,74 @@ Open your web browser (Chrome, Safari, Edge) and go to:
 
 ---
 
-### 🪟 Windows Users
+### 🪟 Windows Users Guide
 
-#### Step 1: Open PowerShell or Command Prompt
-- Press the `Windows key`, type `PowerShell`, and click **Windows PowerShell**.
+#### Option A: One-Click Launcher (Easiest for Non-Tech Users)
+1. **Install Python**:
+   - Download Python from [python.org/downloads](https://www.python.org/downloads/).
+   - ⚠️ **CRITICAL**: During setup, check the box that says **"Add python.exe to PATH"** at the bottom of the installer window!
+2. **Download the code**:
+   - Click the green **Code** button at the top of this GitHub page -> click **Download ZIP**.
+   - Extract the ZIP file anywhere on your computer.
+3. **Double-click `run_windows.bat`**:
+   - Just double-click the file named `run_windows.bat` in the project folder.
+   - It will automatically set up the virtual environment, install packages, open your browser, and launch the app!
 
-#### Step 2: Clone & open project folder
+---
+
+#### Option B: Manual Command-by-Command (PowerShell)
+
+##### Step 1: Open PowerShell
+- Press the `Windows key`, type `PowerShell`, and press Enter.
+
+##### Step 2: Clone & enter project folder
 ```powershell
 git clone https://github.com/raushan22882917/cricket.git
 cd cricket
 ```
+*(Or if you downloaded the ZIP, type `cd` followed by the folder path where you extracted it, e.g. `cd C:\Users\YourName\Downloads\cricket`).*
 
-#### Step 3: Create a virtual environment
+##### Step 3: Create virtual environment
 ```powershell
 python -m venv .venv
 ```
 
-#### Step 4: Activate the virtual environment
-- In **PowerShell**:
-  ```powershell
-  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-  .venv\Scripts\Activate.ps1
-  ```
-- *Or in Command Prompt (CMD)*:
-  ```cmd
-  .venv\Scripts\activate.bat
-  ```
-*(You will see `(.venv)` in front of your command prompt line).*
+##### Step 4: Activate virtual environment
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.venv\Scripts\Activate.ps1
+```
+*(You will see `(.venv)` appear at the start of your prompt line).*
 
-#### Step 5: Install dependencies
+##### Step 5: Install required dependencies
 ```powershell
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-#### Step 6: Start the app
+##### Step 6: Start the server
 ```powershell
 python server.py
 ```
 
-#### Step 7: Open in your browser
-Open your browser and visit:
+##### Step 7: Open in your browser
+Open Chrome, Edge, or Firefox and go to:
 👉 **[http://localhost:8088](http://localhost:8088)**
+
+---
+
+#### 🛠️ Windows Troubleshooting & FAQs
+
+- **Error: `'python' is not recognized as an internal or external command`**:
+  - Re-run the Python installer, select **Modify**, and make sure **"Add Python to environment variables" / "Add python.exe to PATH"** is checked. Then restart PowerShell/CMD.
+- **Error: `File ... Activate.ps1 cannot be loaded because running scripts is disabled`**:
+  - Run this command in PowerShell first:
+    ```powershell
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+    ```
+    Then run `.venv\Scripts\Activate.ps1` again.
+- **How to stop the server**:
+  - Press `Ctrl + C` in the PowerShell or CMD window.
 
 ---
 
