@@ -19,6 +19,7 @@ import html
 import time
 import json
 import queue
+import base64
 import tempfile
 import asyncio
 import logging
@@ -145,12 +146,24 @@ class CrexParser:
             return output
         except ValueError:
             raise
+        except subprocess.TimeoutExpired:
+            logger.error("Timed out fetching URL from CREX")
+            raise ValueError("CREX took too long to respond. Please try again in a moment.")
+        except subprocess.CalledProcessError as e:
+            # curl exit codes: 6 = DNS lookup failed, 7 = couldn't connect, 28 = timed out
+            reason = {
+                6: "Could not resolve crex.com — check your internet connection.",
+                7: "Could not connect to CREX — check your internet connection.",
+                28: "CREX took too long to respond. Please try again in a moment.",
+            }.get(e.returncode, "Could not reach CREX. Please check your connection and try again.")
+            logger.error(f"curl failed fetching URL (exit {e.returncode})")
+            raise ValueError(reason)
         except Exception as e:
             logger.error(f"Error fetching URL: {e}")
-            raise ValueError(f"Network error while connecting to CREX: {e}")
+            raise ValueError("Could not reach CREX. Please check your connection and try again.")
 
     def parse(self, html_text: str) -> Dict[str, Any]:
-        soup = BeautifulSoup(html_text, "html.parser")
+        soup = BeautifulSoup(html_text, "lxml")
 
         # 1. Match Title & Venue
         title = soup.title.get_text() if soup.title else "Live Cricket Match"
@@ -265,12 +278,22 @@ class CrexParser:
             non_striker_runs = int(batter_matches[1][1])
             non_striker_balls = int(batter_matches[1][2])
 
-        bowler_matches = re.findall(r'([A-Za-zऀ-ॿ\s\-]+?)\s*\|\s*(\d+)-(\d+)\(([0-9\.]+)\)', section)
-        if bowler_matches:
-            bowler = bowler_matches[0][0].strip()
-            bowler_wickets = int(bowler_matches[0][1])
-            bowler_runs = int(bowler_matches[0][2])
-            bowler_overs = float(bowler_matches[0][3])
+        # Note: the bowler's name/figures also appear later near the "Econ:" label in a
+        # part of the page that reflects the true current bowler; the block anchored on
+        # the first "OVER " occurrence above can lag a bowling change by up to an over.
+        bowler_fresh_match = re.search(r"([A-Za-zऀ-ॿ\s\-]+?)\s*\|\s*(\d+)-(\d+)\s*\|\s*\(([0-9\.]+)\)\s*\|\s*Econ:", full_text)
+        if bowler_fresh_match:
+            bowler = bowler_fresh_match.group(1).strip()
+            bowler_wickets = int(bowler_fresh_match.group(2))
+            bowler_runs = int(bowler_fresh_match.group(3))
+            bowler_overs = float(bowler_fresh_match.group(4))
+        else:
+            bowler_matches = re.findall(r'([A-Za-zऀ-ॿ\s\-]+?)\s*\|\s*(\d+)-(\d+)\(([0-9\.]+)\)', section)
+            if bowler_matches:
+                bowler = bowler_matches[0][0].strip()
+                bowler_wickets = int(bowler_matches[0][1])
+                bowler_runs = int(bowler_matches[0][2])
+                bowler_overs = float(bowler_matches[0][3])
 
         # 4. Extract structured ball-by-ball commentary using exact CREX classes
         balls_data = []
@@ -309,18 +332,10 @@ class CrexParser:
                             c2_raw = str(item.get("c2", "") or "").strip()
                             c2_clean = re.sub(r'\s+', ' ', html.unescape(c2_raw)).strip()
 
-                            if c2_clean:
-                                comm_val = c2_clean
-                            elif r_val == "W":
-                                comm_val = f"Wicket! {m_val}" if m_val else "Wicket down!"
-                            elif r_val == "4":
-                                comm_val = "Boundary! Cracking shot races away to the fence for four."
-                            elif r_val == "6":
-                                comm_val = "Maximum! Struck cleanly into the stands for a huge six."
-                            elif r_val == "0":
-                                comm_val = "Good delivery, defended with care, no run."
-                            else:
-                                comm_val = f"{r_val} run{'s' if r_val != '1' else ''} taken off the delivery."
+                            # Only ever speak the source's own text; skip balls with no real commentary.
+                            if not c2_clean:
+                                continue
+                            comm_val = c2_clean
 
                             spoken = f"Over {o_val}: {m_val}. {comm_val}" if m_val else f"Over {o_val}: {comm_val}"
                             balls_data.append({
@@ -333,7 +348,7 @@ class CrexParser:
                             continue
 
                         # Case 2: Legacy/Text ball format with 'c' string
-                        raw_c = item.get("c", "")
+                        raw_c = str(item.get("c", "") or "")
                         if not raw_c:
                             continue
                         clean_c = html.unescape(raw_c.replace("&l;", "<").replace("&g;", ">").replace("&q;", '"').replace("&a;", "&"))
@@ -378,53 +393,12 @@ class CrexParser:
             if txt and len(txt) > 20 and not any(txt[:25] in p for p in paragraphs):
                 paragraphs.append(txt)
 
-        # Strategy 4C: If balls_data is still empty, parse paragraphs
-        if not balls_data and paragraphs:
-            for p in paragraphs:
-                m_p = re.search(r'(?:Over\s*|^\s*)(\d+\.\d+)\s*:?\s*([^:\n\r0-9]+?)(?:\s+(\d+|W|4|6|0))?\s*[:\-\.]?\s+(.+)', p)
-                if m_p:
-                    balls_data.append({
-                        "over": m_p.group(1),
-                        "matchup": m_p.group(2).strip(),
-                        "runs": m_p.group(3) or "0",
-                        "commentary": m_p.group(4).strip(),
-                        "spoken_line": p
-                    })
-                elif len(p) > 25:
-                    balls_data.append({
-                        "over": "Live",
-                        "matchup": f"{bowler} to {striker}",
-                        "runs": "0",
-                        "commentary": p,
-                        "spoken_line": p
-                    })
-
         # Match status / alert banner
         m_status = re.search(r"(?:\|\s*)([A-Za-z\s]+won by [0-9\sA-Za-z🏆]+|SCORES ARE LEVELLED|[A-Za-z\s]+beat [0-9\sA-Za-z🏆]+|Need \d+ runs? in \d+ balls?|Innings Break|Match drawn|Stumps|Rain delay)", full_text, re.IGNORECASE)
         match_status = m_status.group(1).strip() if m_status else ""
 
-        # Strategy 4D: Situational Broadcast Fallback if no commentary is present (Live, Result, or Upcoming)
-        if not balls_data:
-            if match_status and any(w in match_status.lower() for w in ["won by", "beat", "scores are", "drawn"]):
-                situational_comm = f"Match summary from {venue}: {clean_title}. {batting_team} finished with {total_runs} for {total_wickets} in {overs_str} overs. {match_status}."
-                over_label = "Result"
-                matchup_label = f"{batting_team} vs {bowling_team}"
-            elif total_runs == 0 and total_wickets == 0 and overs_str == "0.0":
-                situational_comm = f"Welcome to our live cricket studio from {venue}! Today {batting_team} take on {bowling_team} in an exciting contest. The pitch is ready and anticipation is high. Stay tuned as action gets underway shortly!"
-                over_label = "Pre-Match"
-                matchup_label = f"{batting_team} vs {bowling_team}"
-            else:
-                situational_comm = f"Live action from {venue}. {batting_team} are {total_runs} for {total_wickets} in {overs_str} overs with a current run rate of {crr}. {striker} is on {striker_runs} runs and {non_striker} on {non_striker_runs}."
-                over_label = overs_str if overs_str != "0.0" else "Live"
-                matchup_label = f"{bowler} to {striker}"
-
-            balls_data.append({
-                "over": over_label,
-                "matchup": matchup_label,
-                "runs": "0",
-                "commentary": situational_comm,
-                "spoken_line": situational_comm
-            })
+        # No fabricated commentary: only the exact ball-by-ball text scraped above is ever spoken.
+        # If the source has no ball text yet, balls_data simply stays empty.
 
         if not paragraphs:
             paragraphs = [b["spoken_line"] for b in balls_data]
@@ -450,9 +424,17 @@ class CrexParser:
         m_lastw = re.search(r"Last Wkt\s*:\s*\|\s*([A-Za-zऀ-ॿ\s\-]+?)\s*\|\s*([0-9\(\)]+)", full_text)
         last_wicket = f"{m_lastw.group(1).strip()} {m_lastw.group(2).strip()}" if m_lastw else ""
 
-        # Current / recent over ball bubbles
-        m_overs = re.findall(r"Over\s*(\d+)\s*\|\s*([0-9\sWwB\|\+\.]+?)\s*\|\s*=\s*(\d+)", full_text)
-        this_over_balls = [x.strip() for x in m_overs[-1][1].split("|")] if m_overs else []
+        # Current / recent over ball bubbles (balls can include extras like "wd", "nb", "lb").
+        # Only trust this block if its over number actually matches the over the scorecard
+        # says is in progress (CREX indexes this either way depending on the page section) —
+        # otherwise it's a stale/previous over and we'd rather show nothing than a mismatch
+        # against the live OVERS count, so it's left empty until a matching poll arrives.
+        m_overs = re.findall(r"Over\s*(\d+)\s*\|\s*(.+?)\s*\|\s*=\s*(\d+)", full_text)
+        this_over_balls = []
+        if m_overs:
+            current_over_no, ball_list_str, _ = m_overs[-1]
+            if current_over_no in (str(c_ov), str(c_ov + 1)):
+                this_over_balls = [x.strip() for x in ball_list_str.split("|")]
 
         # Opponent score (find opponent team score, excluding active batting team and player names)
         team2_score = ""
@@ -554,7 +536,7 @@ def get_live_matches() -> List[Dict[str, str]]:
                 src_url
             ]
             html_content = subprocess.check_output(cmd, timeout=8).decode("utf-8", errors="ignore")
-            soup = BeautifulSoup(html_content, "html.parser")
+            soup = BeautifulSoup(html_content, "lxml")
 
             for a in soup.find_all("a", href=True):
                 href = a["href"]
@@ -666,6 +648,41 @@ def resolve_match_url(user_input: str, force_fuzzy: bool = False) -> tuple[str, 
     return raw, None
 
 
+def sanitize_for_speech(text: str) -> str:
+    """Cleans scraped commentary text so the TTS voice only ever speaks natural
+    words. Scraped HTML/JSON text can leave behind markup artifacts (pipes,
+    asterisks, bullets, stray brackets) and punctuation detached from the
+    word before it (e.g. "runs . He" with a floating space) — many neural
+    voices treat an isolated punctuation token like that as its own word and
+    read it out literally ("dot", "comma"). This strips the artifacts and
+    glues real sentence punctuation back onto its word so it is only ever
+    used as a natural pause, never spoken aloud.
+    """
+    if not text:
+        return ""
+    clean = html.unescape(text)
+    clean = re.sub(r'<[^>]+>', '', clean)
+
+    # Drop markup/scraping symbols a TTS engine has no natural way to read
+    # except by spelling them out.
+    clean = re.sub(r'[|*_~^#@`•‣▪●→➤]+', ' ', clean)
+
+    # Collapse repeated punctuation down to a single mark ("..", "!!!", "--")
+    clean = re.sub(r'([.,!?;:\-])\1+', r'\1', clean)
+
+    # Remove now-empty bracket pairs left behind after the cleanup above
+    clean = re.sub(r'[\(\[\{]\s*[\)\]\}]', '', clean)
+
+    # Glue punctuation onto the preceding word — a floating " . " or " , "
+    # is exactly what makes some neural voices spell it out instead of
+    # treating it as normal sentence flow.
+    clean = re.sub(r'\s+([.,!?;:])', r'\1', clean)
+    # Ensure a single space follows punctuation before the next word
+    clean = re.sub(r'([.,!?;:])(?=[^\s.,!?;:])', r'\1 ', clean)
+
+    return re.sub(r'\s{2,}', ' ', clean).strip()
+
+
 class FastTTS:
     """Broadcaster neural voice generator with English & Hindi support."""
     def __init__(self, language: str = "en", voice: Optional[str] = None):
@@ -680,7 +697,7 @@ class FastTTS:
             self.voice = "en-IN-PrabhatNeural"
 
     async def speak(self, text: str, rate: Optional[str] = None, pitch: Optional[str] = None) -> bytes:
-        clean_text = re.sub(r'<[^>]+>', '', text).strip()
+        clean_text = sanitize_for_speech(text)
         words = clean_text.split()
         if len(words) > 40:
             clean_text = " ".join(words[:40]) + "..."
@@ -706,7 +723,7 @@ class FastTTS:
 
     async def speak_mp3(self, text: str, rate: Optional[str] = None, pitch: Optional[str] = None) -> bytes:
         """Direct ultra-fast MP3 generation with zero format conversion overhead."""
-        clean_text = re.sub(r'<[^>]+>', '', text).strip()
+        clean_text = sanitize_for_speech(text)
         words = clean_text.split()
         if len(words) > 35:
             clean_text = " ".join(words[:35]) + "..."
@@ -721,6 +738,83 @@ class FastTTS:
                 buf.extend(chunk["data"])
         return bytes(buf)
 
+
+class SarvamTTS:
+    """Sarvam AI 'Bulbul' neural voice — adds male Indian-language broadcaster voices."""
+    API_URL = "https://api.sarvam.ai/text-to-speech"
+    DEFAULT_MALE_SPEAKER = {"hi": "shubh", "en": "shubh"}
+
+    def __init__(self, api_key: str, language: str = "hi", speaker: Optional[str] = None):
+        self.api_key = api_key
+        self.language = language
+        self.speaker = speaker or self.DEFAULT_MALE_SPEAKER.get(language, "shubh")
+        self.target_lang_code = "hi-IN" if language == "hi" else "en-IN"
+
+    async def _synthesize_wav(self, text: str, word_limit: int) -> bytes:
+        clean_text = sanitize_for_speech(text)
+        words = clean_text.split()
+        if len(words) > word_limit:
+            clean_text = " ".join(words[:word_limit]) + "..."
+        if not clean_text:
+            return b""
+
+        payload = {
+            "inputs": [clean_text],
+            "target_language_code": self.target_lang_code,
+            "speaker": self.speaker,
+            "model": "bulbul:v3",
+            "pace": 1.05,
+            "speech_sample_rate": 22050,
+            "enable_preprocessing": True,
+        }
+        headers = {"API-Subscription-Key": self.api_key, "Content-Type": "application/json"}
+        try:
+            timeout = aiohttp.ClientTimeout(total=8)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(self.API_URL, json=payload, headers=headers) as resp:
+                    if resp.status != 200:
+                        err = await resp.text()
+                        logger.warning(f"Sarvam TTS error {resp.status}: {err[:200]}")
+                        return b""
+                    data = await resp.json()
+                    audios = data.get("audios") or []
+                    return base64.b64decode(audios[0]) if audios else b""
+        except Exception as e:
+            logger.warning(f"Sarvam TTS request failed: {e}")
+            return b""
+
+    async def speak_mp3(self, text: str, rate: Optional[str] = None, pitch: Optional[str] = None) -> bytes:
+        wav_bytes = await self._synthesize_wav(text, word_limit=35)
+        if not wav_bytes:
+            return b""
+        import io
+        try:
+            seg = AudioSegment.from_file(io.BytesIO(wav_bytes), format="wav")
+            seg = normalize(seg) + 1.5
+            out = io.BytesIO()
+            seg.export(out, format="mp3", bitrate="128k")
+            return out.getvalue()
+        except Exception as e:
+            logger.warning(f"Sarvam audio conversion failed: {e}")
+            return b""
+
+    async def speak(self, text: str, rate: Optional[str] = None, pitch: Optional[str] = None) -> bytes:
+        wav_bytes = await self._synthesize_wav(text, word_limit=40)
+        if not wav_bytes:
+            return b""
+        import io
+        seg = AudioSegment.from_file(io.BytesIO(wav_bytes), format="wav")
+        seg = seg.set_frame_rate(44100).set_channels(2).set_sample_width(2)
+        seg = normalize(seg) + 1.5
+        return seg.raw_data
+
+
+def create_tts(language: str = "en", voice: Optional[str] = None, provider: str = "edge",
+                api_key: Optional[str] = None, speaker: Optional[str] = None):
+    """Builds the configured TTS engine: Edge neural voices (default, free) or Sarvam AI."""
+    if provider == "sarvam" and api_key:
+        return SarvamTTS(api_key=api_key, language=language, speaker=speaker)
+    return FastTTS(language=language, voice=voice)
 
 
 class FastOverlayRenderer:
@@ -843,7 +937,10 @@ class CricketStreamingEngine:
         stream_key: str = "",
         language: str = "en",
         voice: Optional[str] = None,
-        output_file: str = "broadcast_stream.mp4"
+        output_file: str = "broadcast_stream.mp4",
+        tts_provider: str = "edge",
+        tts_api_key: Optional[str] = None,
+        tts_speaker: Optional[str] = None,
     ):
         self.parser = CrexParser(url, lang=language)
         self.mode = mode
@@ -852,7 +949,8 @@ class CricketStreamingEngine:
         self.output_file = output_file
         self.translator = FreeTranslator() if language == "hi" else None
         self.renderer = FastOverlayRenderer()
-        self.tts = FastTTS(language=language, voice=voice)
+        self.tts = create_tts(language=language, voice=voice, provider=tts_provider,
+                               api_key=tts_api_key, speaker=tts_speaker)
 
         self.is_running = False
         self.current_subtitle = "Connecting to live match feed..."
@@ -900,7 +998,7 @@ class CricketStreamingEngine:
 
     async def run(self, max_paragraphs: Optional[int] = None):
         logger.info(f"Fetching match data from: {self.parser.url}")
-        html_content = self.parser.fetch_html()
+        html_content = await self.parser.fetch_html_async()
         match_data = self.parser.parse(html_content)
         logger.info(f"Match: {match_data['title']} | Score: {match_data['batting_team']} {match_data['total_runs']}/{match_data['total_wickets']}")
         logger.info(f"Loaded {len(match_data['paragraphs'])} commentary lines to broadcast in [{self.language.upper()}].")
@@ -939,61 +1037,64 @@ class CricketStreamingEngine:
         # Commentary worker task (Continuous real-time polling)
         async def commentary_worker():
             seen_balls = set()
-            first_run = True
+            catch_up_limit = max_paragraphs if max_paragraphs else 2
+            connector = aiohttp.TCPConnector(limit=5, keepalive_timeout=60)
 
-            while self.is_running:
-                try:
-                    html_text = self.parser.fetch_html()
-                    fresh_data = self.parser.parse(html_text)
-                    match_data.update(fresh_data)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                while self.is_running:
+                    try:
+                        html_text = await self.parser.fetch_html_async(session=session)
+                        fresh_data = self.parser.parse(html_text)
+                        match_data.update(fresh_data)
 
-                    raw_balls = fresh_data.get("balls", [])
-                    new_events = []
+                        raw_balls = fresh_data.get("balls", [])
+                        new_events = []
 
-                    # Iterate over balls chronologically
-                    for b in reversed(raw_balls):
-                        b_key = f"{b.get('over')}_{b.get('runs')}_{b.get('commentary')[:30]}"
-                        if b_key not in seen_balls:
-                            seen_balls.add(b_key)
-                            new_events.append(b)
+                        # Iterate over balls chronologically
+                        for b in reversed(raw_balls):
+                            b_key = f"{b.get('over')}_{b.get('runs')}_{b.get('commentary')[:30]}"
+                            if b_key not in seen_balls:
+                                seen_balls.add(b_key)
+                                new_events.append(b)
 
-                    if first_run:
-                        first_run = False
-                        # On first connect, play the latest 2 balls or max_paragraphs
-                        limit = max_paragraphs if max_paragraphs else 2
-                        new_events = new_events[-limit:] if len(new_events) >= limit else new_events
+                        # Never speak a backlog of historical balls — whether it's the very
+                        # first poll after connecting, or a later poll where the source
+                        # suddenly returns several balls at once — always catch up to just
+                        # the latest delivery/ies so commentary never floods/overlaps.
+                        if len(new_events) > catch_up_limit:
+                            new_events = new_events[-catch_up_limit:]
 
-                    for b in new_events:
-                        if not self.is_running:
+                        for b in new_events:
+                            if not self.is_running:
+                                break
+
+                            human_res = commentator.humanize(
+                                b.get("spoken_line") or b.get("commentary", ""),
+                                ball_info={**match_data, **b},
+                                lang=self.language
+                            )
+                            spoken_text = human_res["spoken_text"]
+                            self.active_alert = human_res["badge"]
+                            self.current_subtitle = spoken_text
+
+                            logger.info(f"🎙️ [{human_res['badge']}] Ball {b.get('over')} [{self.language.upper()}]: {spoken_text}")
+
+                            pcm = await self.tts.speak(spoken_text, rate=human_res["rate"], pitch=human_res["pitch"])
+                            duration = len(pcm) / (44100 * 4)
+                            self.audio_queue.put(pcm)
+
+                            await asyncio.sleep(max(3.0, duration + 1.0))
+                            self.active_alert = None
+
+                        if max_paragraphs:
+                            # Fixed paragraph test run requested
                             break
 
-                        human_res = commentator.humanize(
-                            b.get("spoken_line") or b.get("commentary", ""),
-                            ball_info={**match_data, **b},
-                            lang=self.language
-                        )
-                        spoken_text = human_res["spoken_text"]
-                        self.active_alert = human_res["badge"]
-                        self.current_subtitle = spoken_text
+                    except Exception as e:
+                        logger.warning(f"Error during real-time scrape poll: {e}")
 
-                        logger.info(f"🎙️ [{human_res['badge']}] Ball {b.get('over')} [{self.language.upper()}]: {spoken_text}")
-
-                        pcm = await self.tts.speak(spoken_text, rate=human_res["rate"], pitch=human_res["pitch"])
-                        duration = len(pcm) / (44100 * 4)
-                        self.audio_queue.put(pcm)
-
-                        await asyncio.sleep(max(3.0, duration + 1.0))
-                        self.active_alert = None
-
-                    if max_paragraphs:
-                        # Fixed paragraph test run requested
-                        break
-
-                except Exception as e:
-                    logger.warning(f"Error during real-time scrape poll: {e}")
-
-                # Poll interval for real-time live cricket feed (4s)
-                await asyncio.sleep(4)
+                    # Poll interval for real-time live cricket feed (1.5s, matches web pipeline)
+                    await asyncio.sleep(1.5)
 
             logger.info("Real-time commentary stream cycle finished.")
 

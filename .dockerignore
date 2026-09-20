@@ -1,9 +1,10 @@
 .venv/
 __pycache__/
 *.pyc
+.git/
+.claude/
 *.mp4
 *.png
-*.pipe
+recordings/*.mp3
 .env
 .DS_Store
-.claude/

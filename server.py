@@ -1,24 +1,26 @@
 """Web Server & Real-Time Broadcast Hub for Cricket AI Broadcaster.
 
-Provides modern Web UI, WebSocket live feed, in-browser audio streaming,
-voice clip archival in /recordings, and Railway cloud deployment readiness.
+Provides modern Web UI, WebSocket live feed, and in-browser audio streaming.
+Voice audio is synthesized and streamed straight to the browser in memory —
+never written to disk.
 """
 import os
-import re
-import sys
-import time
 import json
+import base64
 import asyncio
 import logging
 from pathlib import Path
 from typing import Dict, Any, Set, Optional
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import aiohttp
 from aiohttp import web
-import aiohttp_cors
 
 # Import existing core modules
-from cricket_streamer import CrexParser, FreeTranslator, FastTTS, FastOverlayRenderer, get_live_matches, resolve_match_url
+from cricket_streamer import CrexParser, create_tts, get_live_matches, resolve_match_url
 from src.human_commentator import commentator
 
 logging.basicConfig(
@@ -30,8 +32,6 @@ logger = logging.getLogger("WebServer")
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
-RECORDINGS_DIR = BASE_DIR / "recordings"
-RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 class BroadcastHub:
     def __init__(self):
@@ -42,18 +42,6 @@ class BroadcastHub:
         self.youtube_task: Optional[asyncio.Task] = None
         self.latest_match_state: Dict[str, Any] = {}
         self.latest_commentary = ""
-        self.recordings_meta = []
-        self._load_existing_recordings()
-
-    def _load_existing_recordings(self):
-        for p in sorted(RECORDINGS_DIR.glob("*.mp3"), key=os.path.getmtime, reverse=True)[:30]:
-            self.recordings_meta.append({
-                "filename": p.name,
-                "url": f"/recordings/{p.name}",
-                "title": p.name.replace(".mp3", "").replace("_", " ").title(),
-                "time": time.strftime("%I:%M:%S %p", time.localtime(os.path.getmtime(p))),
-                "duration": 5.0
-            })
 
     async def broadcast_ws(self, msg_type: str, data: Any):
         """Pushes real-time JSON payload to all connected browser clients."""
@@ -67,7 +55,8 @@ class BroadcastHub:
         for ws in stale:
             self.active_websockets.discard(ws)
 
-    async def start_broadcast(self, url: str, lang: str = "hi", stream_key: str = ""):
+    async def start_broadcast(self, url: str, lang: str = "hi", stream_key: str = "",
+                               tts_provider: str = "edge", tts_api_key: str = "", tts_speaker: str = ""):
         if self.is_running:
             return {"ok": False, "error": "Broadcast is already running"}
 
@@ -108,7 +97,10 @@ class BroadcastHub:
             return {"ok": False, "error": f"Failed to connect to match URL: {e}"}
 
         self.is_running = True
-        self.broadcast_task = asyncio.create_task(self._run_broadcast_pipeline(target_url, lang, stream_key, parser=parser))
+        self.broadcast_task = asyncio.create_task(self._run_broadcast_pipeline(
+            target_url, lang, stream_key, parser=parser,
+            tts_provider=tts_provider, tts_api_key=tts_api_key, tts_speaker=tts_speaker
+        ))
 
         # Launch YouTube Live RTMP stream if stream_key is provided
         if stream_key.strip():
@@ -118,7 +110,10 @@ class BroadcastHub:
                     url=target_url,
                     mode="youtube",
                     stream_key=stream_key.strip(),
-                    language=lang
+                    language=lang,
+                    tts_provider=tts_provider,
+                    tts_api_key=tts_api_key or None,
+                    tts_speaker=tts_speaker or None
                 )
                 self.youtube_task = asyncio.create_task(self.youtube_engine.run())
                 logger.info(f"YouTube Live RTMP broadcast engine launched for stream key: {stream_key[:4]}****")
@@ -174,22 +169,19 @@ class BroadcastHub:
         await self.broadcast_ws("status", {"is_running": False})
         return {"ok": True}
 
-    async def _run_broadcast_pipeline(self, url: str, lang: str, stream_key: str, parser: Optional[CrexParser] = None):
-        logger.info(f"Starting ultra-fast real-time broadcast for URL: {url} (Lang: {lang.upper()})")
+    async def _run_broadcast_pipeline(self, url: str, lang: str, stream_key: str, parser: Optional[CrexParser] = None,
+                                       tts_provider: str = "edge", tts_api_key: str = "", tts_speaker: str = ""):
+        logger.info(f"Starting ultra-fast real-time broadcast for URL: {url} (Lang: {lang.upper()}, Voice: {tts_provider})")
         if parser is None:
             parser = CrexParser(url, lang=lang)
-        tts = FastTTS(language=lang)
+        tts = create_tts(language=lang, provider=tts_provider, api_key=tts_api_key or None, speaker=tts_speaker or None)
 
         # Queue bounded to prevent backlog and maintain real-time pace
         ball_queue = asyncio.Queue(maxsize=10)
         seen_balls = set()
-        first_run = True
-        last_commentary_time = time.time()
-        situation_index = 0
 
         async def voice_worker():
             """Synthesizes and broadcasts neural commentary audio without blocking real-time scraper."""
-            nonlocal last_commentary_time
             while self.is_running:
                 try:
                     event = await asyncio.wait_for(ball_queue.get(), timeout=1.0)
@@ -216,7 +208,6 @@ class BroadcastHub:
                     pitch = human_res["pitch"]
 
                     self.latest_commentary = spoken_text
-                    last_commentary_time = time.time()
 
                     # 1. Instantly push timeline feed item ONLY for actual ball deliveries (never studio updates)
                     is_studio_event = (
@@ -238,28 +229,11 @@ class BroadcastHub:
                     if not mp3_data:
                         continue
 
-                    filename = f"voice_{int(time.time())}_{str(ball_over).replace('.', '_')}.mp3"
-                    file_path = RECORDINGS_DIR / filename
-                    with open(file_path, "wb") as f:
-                        f.write(mp3_data)
-
                     # Estimate duration (~16000 bytes/sec at 128kbps)
                     duration = max(2.5, len(mp3_data) / 16000.0)
 
-                    audio_url = f"/recordings/{filename}"
-                    if is_studio_event:
-                        rec_title = f"[{badge}] Studio - {ball_over} ({lang.upper()})"
-                    else:
-                        rec_title = f"[{badge}] Ball {ball_over} ({lang.upper()})"
-
-                    rec_item = {
-                        "filename": filename,
-                        "url": audio_url,
-                        "title": rec_title,
-                        "time": time.strftime("%I:%M:%S %p"),
-                        "duration": round(duration, 1)
-                    }
-                    self.recordings_meta.insert(0, rec_item)
+                    # Stream audio straight to the browser as a data URI — never touches disk.
+                    audio_url = "data:audio/mpeg;base64," + base64.b64encode(mp3_data).decode("ascii")
 
                     # 3. Broadcast audio and speaking event to browser
                     await self.broadcast_ws("commentary", {
@@ -268,7 +242,6 @@ class BroadcastHub:
                         "audio_url": audio_url,
                         "duration": round(duration, 1)
                     })
-                    await self.broadcast_ws("recording_ready", rec_item)
 
                     # Sleep only for the voice duration (shorten if queue is waiting)
                     pending = ball_queue.qsize()
@@ -290,7 +263,7 @@ class BroadcastHub:
         connector = aiohttp.TCPConnector(limit=10, keepalive_timeout=60)
 
         try:
-            logger.info("Entering ultra-fast live real-time CREX polling loop (1.5s interval)...")
+            logger.info("Entering ultra-fast live real-time CREX polling loop (1.0s interval)...")
             async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
                 while self.is_running:
                     try:
@@ -315,11 +288,13 @@ class BroadcastHub:
                                 seen_balls.add(b_key)
                                 new_events.append(b)
 
-                        if first_run:
-                            first_run = False
-                            # On start, queue the 2 most recent balls so speech starts immediately
-                            if new_events:
-                                new_events = new_events[-2:]
+                        # Never speak a backlog of historical balls — whether it's the very
+                        # first poll after start, or a later poll where the source suddenly
+                        # returns several balls at once (a scrape gap, a slow first response,
+                        # etc.), always catch up to just the latest delivery or two so
+                        # commentary never floods/overlaps.
+                        if len(new_events) > 2:
+                            new_events = new_events[-2:]
 
                         for b in new_events:
                             # Drop oldest if queue is full to enforce real-time pace
@@ -329,66 +304,6 @@ class BroadcastHub:
                                 except asyncio.QueueEmpty:
                                     pass
                             await ball_queue.put({"ball": b, "fresh_data": fresh_data})
-
-                        # If no new ball event has arrived for > 14 seconds and queue is empty,
-                        # provide situational studio color commentary (NEVER create fake duplicate ball deliveries)
-                        now = time.time()
-                        if not new_events and (now - last_commentary_time > 14.0) and ball_queue.empty():
-                            is_upcoming = (fresh_data.get("total_runs", 0) == 0 and fresh_data.get("total_wickets", 0) == 0 and str(fresh_data.get("overs", "0.0")) == "0.0")
-                            status_str = str(fresh_data.get("status", "")).lower()
-                            is_completed = any(w in status_str for w in ["won by", "beat", "scores level", "drawn", "concluded", "tied", "match over"])
-                            is_break = any(w in status_str for w in ["stumps", "innings break", "lunch", "tea", "rain", "delay", "bad light", "wet outfield", "break", "timeout"])
-
-                            if is_upcoming:
-                                sit_lines = [
-                                    f"Live build-up from {fresh_data.get('venue', 'the ground')}: {fresh_data.get('batting_team')} vs {fresh_data.get('bowling_team')}. Both teams are conducting final warm-ups as we await the toss.",
-                                    f"Conditions here at {fresh_data.get('venue', 'the venue')} look magnificent. The surface is well-prepared and promises great value for crisp cricket shots.",
-                                    f"A key factor today will be how {fresh_data.get('batting_team')} negotiate the new ball against {fresh_data.get('bowling_team')}'s bowling attack in the opening powerplay.",
-                                    f"Stay tuned right here on our broadcast. Toss, final playing elevens, and live commentary will begin shortly!"
-                                ]
-                                sit_over = "Pre-Match"
-                                sit_matchup = f"{fresh_data.get('batting_team', '')} vs {fresh_data.get('bowling_team', '')}"
-                            elif is_completed:
-                                sit_lines = [
-                                    f"Match wrap from {fresh_data.get('venue', 'the venue')}: {fresh_data.get('status', 'Match concluded')}!",
-                                    f"Final scorecard recap: {fresh_data.get('batting_team')} finished with {fresh_data.get('total_runs', 0)} for {fresh_data.get('total_wickets', 0)} in {fresh_data.get('overs', '0.0')} overs. {fresh_data.get('team2_score', '')}.",
-                                    f"A commanding performance here in {fresh_data.get('venue', 'the game')}. Both teams put on a memorable contest, but the key moments proved decisive.",
-                                    f"Thank you for tuning into our AI broadcast coverage. Highlights and analysis continue here on the stream."
-                                ]
-                                sit_over = "Result"
-                                sit_matchup = f"{fresh_data.get('batting_team', '')} vs {fresh_data.get('bowling_team', '')}"
-                            elif is_break:
-                                sit_lines = [
-                                    f"Play update from {fresh_data.get('venue', 'the ground')}: It is currently {fresh_data.get('status', 'Stumps')}. {fresh_data.get('batting_team', 'Batting team')} stand at {fresh_data.get('total_runs', 0)} for {fresh_data.get('total_wickets', 0)} in {fresh_data.get('overs', '0.0')} overs.",
-                                    f"At the crease for {fresh_data.get('batting_team', 'the team')}: {fresh_data.get('striker', 'The batter')} is batting on {fresh_data.get('striker_runs', 0)} off {fresh_data.get('striker_balls', 0)} deliveries, joined by {fresh_data.get('non_striker', 'partner')} on {fresh_data.get('non_striker_runs', 0)}.",
-                                    f"For {fresh_data.get('bowling_team', 'the bowling side')}, {fresh_data.get('bowler', 'Bowler')} has bowled with figures of {fresh_data.get('bowler_figures', '0-0')} and an economy of {fresh_data.get('bowler_econ', '0.00')}.",
-                                    f"Play will resume as scheduled. Keep listening to our live AI stream for continuous expert analysis and statistics."
-                                ]
-                                sit_over = "Stumps" if "stumps" in status_str else "Break"
-                                sit_matchup = f"{fresh_data.get('batting_team', '')} vs {fresh_data.get('bowling_team', '')}"
-                            else:
-                                sit_lines = [
-                                    f"Match update from {fresh_data.get('venue', 'the ground')}: {fresh_data.get('batting_team', 'Batting team')} are {fresh_data.get('total_runs', 0)} for {fresh_data.get('total_wickets', 0)} in {fresh_data.get('overs', '0.0')} overs. Current run rate is {fresh_data.get('crr', '0.00')}.",
-                                    f"At the crease, {fresh_data.get('striker', 'The batter')} is playing on {fresh_data.get('striker_runs', 0)} off {fresh_data.get('striker_balls', 0)} deliveries, joined by {fresh_data.get('non_striker', 'partner')} on {fresh_data.get('non_striker_runs', 0)}.",
-                                    f"{fresh_data.get('bowler', 'Bowler')} is currently bowling with figures of {fresh_data.get('bowler_figures', '0-0')} and an economy rate of {fresh_data.get('bowler_econ', '0.00')}.",
-                                    f"The partnership between {fresh_data.get('striker', 'striker')} and {fresh_data.get('non_striker', 'non-striker')} is {fresh_data.get('partnership', 'holding firm')}."
-                                ]
-                                sit_over = "Update"
-                                sit_matchup = f"{fresh_data.get('bowler', '')} to {fresh_data.get('striker', '')}"
-
-                            sit_text = sit_lines[situation_index % len(sit_lines)]
-                            situation_index += 1
-                            last_commentary_time = now
-
-                            sit_ball = {
-                                "over": sit_over,
-                                "runs": "",
-                                "matchup": sit_matchup,
-                                "commentary": sit_text,
-                                "spoken_line": sit_text,
-                                "is_studio": True
-                            }
-                            await ball_queue.put({"ball": sit_ball, "fresh_data": fresh_data})
 
                         consecutive_errors = 0
                     except asyncio.CancelledError:
@@ -406,8 +321,8 @@ class BroadcastHub:
                             await self.broadcast_ws("error", {"message": f"Connection lost to match feed: {e}"})
                             break
 
-                    # 1.5s poll rate for true real-time live streaming
-                    await asyncio.sleep(1.5)
+                    # 1s poll rate for true real-time live streaming
+                    await asyncio.sleep(1.0)
 
         except asyncio.CancelledError:
             logger.info("Broadcast pipeline cancelled by user.")
@@ -432,7 +347,7 @@ async def handle_index(request: web.Request) -> web.FileResponse:
     return web.FileResponse(WEB_DIR / "index.html")
 
 async def handle_ws(request: web.Request) -> web.WebSocketResponse:
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(heartbeat=30.0, autoping=True)
     await ws.prepare(request)
     hub.active_websockets.add(ws)
 
@@ -462,9 +377,6 @@ async def handle_api_status(request: web.Request) -> web.Response:
         "latest_commentary": hub.latest_commentary
     })
 
-async def handle_api_recordings(request: web.Request) -> web.Response:
-    return web.json_response(hub.recordings_meta[:50])
-
 async def handle_api_live_matches(request: web.Request) -> web.Response:
     matches = await asyncio.to_thread(get_live_matches)
     return web.json_response({"ok": True, "matches": matches})
@@ -486,11 +398,18 @@ async def handle_api_start(request: web.Request) -> web.Response:
         url = body.get("url", "").strip()
         lang = body.get("lang", "hi")
         stream_key = body.get("stream_key", "")
+        tts_provider = body.get("tts_provider", "edge").strip() or "edge"
+        tts_api_key = body.get("sarvam_api_key", "").strip() or os.getenv("SARVAM_API_KEY", "").strip()
+        tts_speaker = body.get("sarvam_speaker", "").strip()
 
         if not url:
             return web.json_response({"ok": False, "error": "Match URL or team name is required"}, status=400)
 
-        res = await hub.start_broadcast(url=url, lang=lang, stream_key=stream_key)
+        if tts_provider == "sarvam" and not tts_api_key:
+            return web.json_response({"ok": False, "error": "Sarvam API key is required to use the Sarvam voice engine"}, status=400)
+
+        res = await hub.start_broadcast(url=url, lang=lang, stream_key=stream_key,
+                                         tts_provider=tts_provider, tts_api_key=tts_api_key, tts_speaker=tts_speaker)
         status_code = 200 if res.get("ok") else 400
         return web.json_response(res, status=status_code)
     except Exception as e:
@@ -511,20 +430,18 @@ def create_app() -> web.Application:
     app.router.add_get("/favicon.ico", handle_favicon)
     app.router.add_get("/ws", handle_ws)
     app.router.add_get("/api/status", handle_api_status)
-    app.router.add_get("/api/recordings", handle_api_recordings)
     app.router.add_get("/api/live-matches", handle_api_live_matches)
     app.router.add_post("/api/resolve", handle_api_resolve)
     app.router.add_post("/api/start", handle_api_start)
     app.router.add_post("/api/stop", handle_api_stop)
 
-    # Static assets and recordings
+    # Static assets
     app.router.add_static("/static/", path=WEB_DIR, name="static")
-    app.router.add_static("/recordings/", path=RECORDINGS_DIR, name="recordings")
 
     return app
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8088"))
+    port = int(os.getenv("PORT", "10000" if os.getenv("RENDER") else "8088"))
     host = os.getenv("HOST", "0.0.0.0")
     app = create_app()
     logger.info(f"Cricket AI Web UI running on http://{host}:{port}")

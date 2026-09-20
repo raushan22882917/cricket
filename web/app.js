@@ -45,6 +45,9 @@
   const matchUrlInput = document.getElementById("matchUrl");
   const resolveBadge = document.getElementById("resolveBadge");
   const resolveBadgeText = document.getElementById("resolveBadgeText");
+  const voiceEngineSelect = document.getElementById("voiceEngineSelect");
+  const sarvamKeyGroup = document.getElementById("sarvamKeyGroup");
+  const sarvamApiKeyInput = document.getElementById("sarvamApiKey");
 
   const onAirBadge = document.getElementById("onAirBadge");
   const onAirText = document.getElementById("onAirText");
@@ -54,11 +57,9 @@
 
   const feedList = document.getElementById("feedList");
   const feedCount = document.getElementById("feedCount");
-  const archiveList = document.getElementById("archiveList");
-  const archiveCount = document.getElementById("archiveCount");
 
   let totalBalls = 0;
-  let totalArchives = 0;
+  let isRunning = false;
 
   function showAlert(msg) {
     if (systemAlert && systemAlertText) {
@@ -88,6 +89,18 @@
 
   if (btnDismissAlert) {
     btnDismissAlert.addEventListener("click", hideAlert);
+  }
+
+  // Voice Engine Selector: reveal the Sarvam API key field only when selected
+  if (voiceEngineSelect && sarvamKeyGroup) {
+    try {
+      const savedKey = localStorage.getItem("sarvamApiKey");
+      if (savedKey && sarvamApiKeyInput) sarvamApiKeyInput.value = savedKey;
+    } catch (_) {}
+
+    voiceEngineSelect.addEventListener("change", () => {
+      sarvamKeyGroup.classList.toggle("hidden", voiceEngineSelect.value !== "sarvam");
+    });
   }
 
   // 1. WebSocket Connection
@@ -138,10 +151,6 @@
         handleCommentary(msg.data);
         break;
 
-      case "recording_ready":
-        addArchiveItem(msg.data);
-        break;
-
       case "feed_item":
         addFeedItem(msg.data);
         break;
@@ -163,6 +172,7 @@
   }
 
   function updateEngineStatus(data) {
+    isRunning = !!data.is_running;
     if (data.is_running) {
       statusBadge.className = "badge-status streaming";
       if (data.has_youtube) {
@@ -177,8 +187,10 @@
       statusText.textContent = "IDLE";
       btnStart.disabled = false;
       btnStop.disabled = true;
-      setTalkingState(false);
     }
+    // Re-evaluate the on-air badge for the new running state (shows the
+    // "waiting for next ball" loader as soon as a broadcast starts).
+    setTalkingState(false);
   }
 
   function updateScoreboard(data) {
@@ -265,15 +277,33 @@
     }, durMs);
   }
 
+  function resetStudioToIdle() {
+    onAirBadge.className = "on-air-badge";
+    onAirText.textContent = "STUDIO READY";
+    speakingText.textContent = '"Start a broadcast to hear live ball-by-ball commentary here."';
+    playerStateText.textContent = "Voice synthesizer online (auto-play enabled)";
+  }
+
   function setTalkingState(isTalking, badge = null) {
     if (isTalking) {
       onAirBadge.className = "on-air-badge active";
       onAirText.textContent = badge ? `${badge} • ON AIR` : "ON AIR (COMMENTATOR)";
       waveform.className = "waveform active";
+    } else if (isRunning) {
+      // Broadcast is live but no ball has come in yet — let the user know
+      // the system is still working, not stuck. Clear the last spoken line
+      // too, so the commentary box never shows stale text as if it were
+      // still current while we wait for the next ball to match up.
+      onAirBadge.className = "on-air-badge waiting";
+      onAirText.textContent = "WAITING FOR NEXT BALL...";
+      waveform.className = "waveform";
+      speakingText.textContent = '"Waiting for the next ball\'s commentary..."';
+      playerStateText.textContent = "⏳ Listening for the next ball...";
     } else {
       onAirBadge.className = "on-air-badge";
       onAirText.textContent = "STUDIO READY";
       waveform.className = "waveform";
+      playerStateText.textContent = "Voice synthesizer online (auto-play enabled)";
     }
   }
 
@@ -326,34 +356,6 @@
     feedList.prepend(el);
   }
 
-
-  function addArchiveItem(item) {
-    const empty = archiveList.querySelector(".feed-empty");
-    if (empty) empty.remove();
-
-    totalArchives++;
-    archiveCount.textContent = `${totalArchives} Clips`;
-
-    const el = document.createElement("div");
-    el.className = "archive-item";
-    el.innerHTML = `
-      <div class="archive-info">
-        <span class="archive-title">${item.title || "Commentary Voice Clip"}</span>
-        <span class="archive-time">${item.time || new Date().toLocaleTimeString()} • ${item.duration ? item.duration.toFixed(1) + "s" : ""}</span>
-      </div>
-      <div class="archive-actions">
-        <button class="btn-play-sm" onclick="window.playClip('${item.url}')">▶ Play</button>
-        <a class="btn-dl-sm" href="${item.url}" download="${item.filename || 'commentary.mp3'}">⬇ MP3</a>
-      </div>
-    `;
-
-    archiveList.prepend(el);
-  }
-
-  window.playClip = function (url) {
-    audioPlayer.src = url;
-    audioPlayer.play();
-  };
 
   // 3. User Controls & Active Match Selector
   async function loadActiveMatches() {
@@ -424,6 +426,8 @@
     const url = matchUrlInput.value.trim();
     const lang = document.getElementById("langSelect").value;
     const key = document.getElementById("streamKey").value.trim();
+    const ttsProvider = voiceEngineSelect ? voiceEngineSelect.value : "edge";
+    const sarvamApiKey = sarvamApiKeyInput ? sarvamApiKeyInput.value.trim() : "";
 
     // Prime HTML5 audio element on user click to unlock browser autoplay policy
     try {
@@ -437,8 +441,26 @@
       return;
     }
 
+    if (ttsProvider === "sarvam" && !sarvamApiKey) {
+      showAlert("Please paste your Sarvam API key to use the Sarvam voice engine.");
+      return;
+    }
+
+    try {
+      if (ttsProvider === "sarvam" && sarvamApiKey) {
+        localStorage.setItem("sarvamApiKey", sarvamApiKey);
+      }
+    } catch (_) {}
+
     btnStart.disabled = true;
     statusText.textContent = "CONNECTING FEED...";
+
+    // Show a loader right away — don't wait for the first WS message to
+    // tell the user something is happening.
+    onAirBadge.className = "on-air-badge waiting";
+    onAirText.textContent = "CONNECTING TO MATCH FEED...";
+    speakingText.textContent = '"Connecting to the live match feed — this can take a few seconds..."';
+    playerStateText.textContent = "⏳ Fetching the latest match data...";
 
     // Reset client ball feed for new stream
     seenFeedKeys.clear();
@@ -450,13 +472,14 @@
       const resp = await fetch("/api/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, lang, stream_key: key }),
+        body: JSON.stringify({ url, lang, stream_key: key, tts_provider: ttsProvider, sarvam_api_key: sarvamApiKey }),
       });
       const res = await resp.json();
       if (!res.ok) {
         showAlert("Cannot start broadcast: " + (res.error || "Match feed not found."));
         btnStart.disabled = false;
         statusText.textContent = "IDLE";
+        resetStudioToIdle();
       } else {
         hideAlert();
         if (res.resolved_url) {
@@ -470,6 +493,7 @@
       showAlert("Failed to connect to backend server: " + e.message);
       btnStart.disabled = false;
       statusText.textContent = "IDLE";
+      resetStudioToIdle();
     }
   });
 
@@ -505,12 +529,6 @@
       const data = await res.json();
       updateEngineStatus(data);
       if (data.match_state) updateScoreboard(data.match_state);
-
-      const recRes = await fetch("/api/recordings");
-      const recs = await recRes.json();
-      if (Array.isArray(recs)) {
-        recs.forEach(addArchiveItem);
-      }
     } catch (e) {
       console.log("Could not load initial data:", e);
     }

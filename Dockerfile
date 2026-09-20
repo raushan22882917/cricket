@@ -4,7 +4,7 @@ FROM python:3.11-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8088
+    PORT=10000
 
 # Install system dependencies (FFmpeg, curl, fonts for scoreboard rendering)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,10 +24,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy project files
 COPY . .
 
-# Ensure recordings and web directory exist
-RUN mkdir -p /app/recordings /app/web
-
-EXPOSE 8088
+EXPOSE 10000 8088
 
 # Start the web server and live streaming hub
 CMD ["sh", "-c", "python server.py"]

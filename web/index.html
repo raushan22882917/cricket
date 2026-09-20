@@ -82,6 +82,19 @@
           <input type="password" id="streamKey" placeholder="Paste YouTube Live RTMP Key">
         </div>
       </div>
+      <div class="control-inputs voice-inputs-row">
+        <div class="input-group">
+          <label for="voiceEngineSelect">Commentary Voice Engine</label>
+          <select id="voiceEngineSelect">
+            <option value="edge" selected>Edge Neural (Free, Default)</option>
+            <option value="sarvam">Sarvam AI (Male Voice)</option>
+          </select>
+        </div>
+        <div class="input-group sarvam-key-group hidden" id="sarvamKeyGroup">
+          <label for="sarvamApiKey">Sarvam API Key</label>
+          <input type="password" id="sarvamApiKey" placeholder="Paste your Sarvam API subscription key">
+        </div>
+      </div>
       <div class="control-actions">
         <button id="btnStart" class="btn btn-primary">
           <span class="btn-icon">▶</span> START LIVE BROADCAST
@@ -177,6 +190,7 @@
       <section class="studio-card glass-panel">
         <div class="studio-header">
           <div class="on-air-badge" id="onAirBadge">
+            <span class="spinner" id="badgeSpinner"></span>
             <span class="mic-icon">🎙️</span>
             <span id="onAirText">STUDIO READY</span>
           </div>
@@ -194,7 +208,7 @@
         <div class="speaking-box">
           <div class="speaking-label">CURRENT COMMENTARY (ON-AIR VOICE):</div>
           <div id="speakingText" class="speaking-text">
-            "Connecting to stream... Commentary lines will appear here in real time as the AI speaks."
+            "Start a broadcast to hear live ball-by-ball commentary here."
           </div>
         </div>
 
@@ -209,32 +223,17 @@
       </section>
     </div>
 
-    <!-- Bottom Split: Live Commentary Feed & Stored Voice Archives -->
-    <div class="bottom-grid">
-      <!-- Ball-by-Ball Live Timeline -->
-      <section class="feed-card glass-panel">
-        <div class="feed-header">
-          <h3>Ball-by-Ball Live Commentary</h3>
-          <span id="feedCount" class="badge-count">0 Balls</span>
-        </div>
-        <div id="feedList" class="feed-list">
-          <!-- Dynamically populated ball items -->
-          <div class="feed-empty">Waiting for match events to stream...</div>
-        </div>
-      </section>
-
-      <!-- Stored Voice Clips & Download Archive -->
-      <section class="archive-card glass-panel">
-        <div class="archive-header">
-          <h3>Stored Voice Recordings Archive</h3>
-          <span id="archiveCount" class="badge-count">0 Clips</span>
-        </div>
-        <div id="archiveList" class="archive-list">
-          <!-- Dynamically populated recording items with audio play & download buttons -->
-          <div class="feed-empty">No voice recordings generated yet.</div>
-        </div>
-      </section>
-    </div>
+    <!-- Ball-by-Ball Live Timeline -->
+    <section class="feed-card glass-panel">
+      <div class="feed-header">
+        <h3>Ball-by-Ball Live Commentary</h3>
+        <span id="feedCount" class="badge-count">0 Balls</span>
+      </div>
+      <div id="feedList" class="feed-list">
+        <!-- Dynamically populated ball items -->
+        <div class="feed-empty">Waiting for match events to stream...</div>
+      </div>
+    </section>
   </main>
 
   <footer class="footer">

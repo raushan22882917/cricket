@@ -1,131 +1,93 @@
-# 🏏 Real-Time Cricket YouTube Live AI Broadcast Engine
+# 🏏 Cricket AI Broadcaster
 
-An end-to-end automated broadcasting pipeline that transforms raw ball-by-ball cricket data into a television-style live stream on YouTube Live with:
-- **Natural-Sounding, Monetisable Voice-Over**: Broadcast-engineered neural voice commentary (Ravi Shastri / Nasser Hussain / Ricky Ponting style).
-- **Pure Color Commentary NLP**: Context-aware tactical insights, player career records, match pressure calculations, and historical cricket heritage (play-by-play left to graphics).
-- **Dynamic 720p/1080p TV Broadcast Overlay**: Animated lower-third scoreboard, batsman/bowler cards, DRS/boundary/wicket flash banners, and live "On Air" commentary badge.
-- **Sub-5-Second Latency**: Optimized asynchronous event-to-voice and FFmpeg RTMP zero-latency push directly to YouTube Live.
-- **Single-Command Launch**: Automated startup with seamless fallback between Live YouTube streaming and local MP4 preview recording.
+A simple, single-server web app that turns a live CREX match page into:
+- A live scoreboard + ball-by-ball feed in the browser.
+- Spoken commentary — the **exact ball-by-ball text as published on the source site**, read aloud in a neural voice. Nothing is invented, rewritten, or padded with filler; only the delivery (pace/pitch) is nudged per event (wicket, six, four, dot ball) so it doesn't sound flat.
+- An optional simultaneous push of the same commentary to **YouTube Live** over RTMP.
 
 ---
 
-## ⚡ Quick Start (Single Command)
-
-### 1. Run Local Broadcast Preview (No Stream Key Required)
-```bash
-./run_broadcast.sh --duration 30
-```
-This generates `broadcast_output.mp4` with full synced video, television overlay, crowd audio, and live AI commentary.
-
-### 2. Stream Directly to YouTube Live
-1. Open [YouTube Studio Live](https://studio.youtube.com) and click **Go Live**.
-2. Copy your **Stream Key**.
-3. Launch with:
-```bash
-./run_broadcast.sh --mode youtube --key YOUR_YOUTUBE_STREAM_KEY
-```
-Or add `YOUTUBE_STREAM_KEY=YOUR_KEY` inside `.env` and run:
-```bash
-./run_broadcast.sh --mode youtube
-```
-
----
-
-## 🏗️ System Architecture
-
-```
-[Live Ball Data Feed / Event Detector]
-                   │
-                   ▼ (JSON POST to http://localhost:8088/event)
-      [Event Ingest & Match State]
-         │                     │
-         ▼                     ▼
-[Color Commentary Engine]   [Broadcast Overlay Renderer]
- (Player Stats + Heritage)   (TV Lower-Third, Alerts, Pitch Radar)
-         │                               │
-         ▼                               ▼
- [Neural TTS Broadcaster]           [Raw RGB Video]
-         │                               │
-         ▼                               ▼
- [Stadium Audio Mixer] ─────────────▶ [FFmpeg RTMP Pipeline]
-                                         │
-                                         ▼
-                             [YouTube Live Dashboard]
-```
-
----
-
-## 🎙️ NLP Commentary & Voice Broadcaster
-
-### Color Commentary Engine (`src/commentary_engine.py`)
-Unlike standard play-by-play (which simply announces "Cummins bowls to Kohli, four runs"), this engine produces **pure color commentary**:
-- **Player Stats & Signatures**: References Kohli's 88+ average in T20 chases, Rohit's world record sixes, Bumrah's hyperextended release point.
-- **Tactical Analysis**: Highlights field placements (deep point, backward square), bowling seam presentation, and bowler speeds.
-- **Cricket Heritage**: Evokes iconic moments (e.g. Kohli's 2022 MCG straight six), venue idiosyncrasies (Wankhede's short boundaries & evening dew).
-- **Dual Engine**:
-  - **Gemini 2.5 Flash (`google-genai`)**: Generates real-time, high-creativity color banter if `GEMINI_API_KEY` is provided.
-  - **Heuristic Neural Narrative Engine**: Built-in zero-latency engine operating with sub-50ms execution and 100% cricket accuracy.
-
-### Neural TTS Engine (`src/tts_engine.py`)
-- **Voices Available**:
-  - `en-IN-PrabhatNeural`: Authoritative Indian English commentator (Ravi Shastri tone).
-  - `en-IN-NeerjaNeural`: Insightful female broadcaster (Isa Guha tone).
-  - `en-GB-RyanNeural`: British cricket analyst (Nasser Hussain / Michael Atherton tone).
-  - `en-AU-WilliamNeural`: Australian fast-paced color commentator (Ricky Ponting tone).
-- **Acoustic Staging**: Broadcast presence EQ boost, gentle bass warmth, and studio normalization ensure voice uniqueness and YouTube monetization compliance.
-
----
-
-## 📡 Live Ingestion API (Event Webhook)
-
-You can push live ball events from your event detector into the engine via HTTP POST:
+## ⚡ Quick Start
 
 ```bash
-curl -X POST http://localhost:8088/event \
-  -H "Content-Type: application/json" \
-  -d '{
-    "match_id": "IND_AUS_T20_2026",
-    "match_title": "India vs Australia - 3rd T20I",
-    "venue": "Wankhede Stadium",
-    "innings": 2,
-    "batting_team": "IND",
-    "bowling_team": "AUS",
-    "target": 188,
-    "over": 18,
-    "ball": 1,
-    "runs": 4,
-    "is_boundary": true,
-    "boundary_type": 4,
-    "is_wicket": false,
-    "striker": "Virat Kohli",
-    "striker_runs": 48,
-    "striker_balls": 34,
-    "non_striker": "Hardik Pandya",
-    "non_striker_runs": 24,
-    "non_striker_balls": 14,
-    "bowler": "Pat Cummins",
-    "bowler_overs": 3.1,
-    "bowler_runs": 28,
-    "bowler_wickets": 1,
-    "total_runs": 168,
-    "total_wickets": 4,
-    "play_by_play": "Cummins pitches up outside off, Kohli leans into a majestic cover drive for four.",
-    "speed_kph": 139.4
-  }'
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python server.py
 ```
+
+Open `http://localhost:8088`, then:
+1. Pick a live match from the dropdown, or paste any CREX/Cricbuzz/Cricinfo match link (or just type team names).
+2. Choose the commentary language (English / Hindi).
+3. Optionally paste a YouTube Live RTMP stream key to broadcast there at the same time.
+4. Click **Start**.
 
 ---
 
-## ⚙️ Configuration (`.env`)
+## 🚀 Deploy to Render
+
+Deploy this application directly to [Render](https://render.com) with full Docker, FFmpeg, and WebSocket support.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
+
+### Option 1: One-Click Blueprint (Recommended)
+1. Push this repository to GitHub or GitLab.
+2. Click the **Deploy to Render** button above (or go to [Render Dashboard](https://dashboard.render.com) -> **New +** -> **Blueprint**).
+3. Connect your repository. Render will automatically read [`render.yaml`](render.yaml).
+4. (Optional) Set `SARVAM_API_KEY` if you plan to use Sarvam AI Indic voices.
+5. Click **Apply**. Render will build the Docker container (with FFmpeg and required fonts pre-installed) and launch the live web service.
+
+### Option 2: Manual Web Service Setup
+1. In the [Render Dashboard](https://dashboard.render.com), click **New +** -> **Web Service**.
+2. Connect your repository.
+3. Select **Docker** as the runtime.
+4. Render will auto-detect the Dockerfile:
+   - **Dockerfile Path**: `./Dockerfile`
+   - **Health Check Path**: `/api/status`
+   - **Port**: `10000` (Render defaults to `10000`)
+5. Choose the **Free** plan and click **Create Web Service**.
+
+---
+
+## 🏗️ How it works
+
+```
+CREX match page
+      │  (scraped every 1.5s)
+      ▼
+CrexParser.parse()  →  real ball-by-ball commentary text only
+      │
+      ▼
+HumanCommentator  →  classifies each ball (wicket/six/four/dot) for voice tone,
+                      speaks the source text unchanged
+      │
+      ├──▶ Edge-TTS neural voice  →  streamed in-memory to the browser (WebSocket)
+      │
+      └──▶ CricketStreamingEngine  →  FFmpeg  →  YouTube Live RTMP (optional)
+```
+
+Everything runs from one process, `server.py`.
+
+---
+
+## 🎙️ Voice — real-time only, never saved
+
+Each spoken line is synthesized in memory and sent straight to the browser as audio over the WebSocket. Nothing is ever written to disk — there is no recordings folder and no clip archive. While a broadcast is live but no new ball has landed yet, the UI shows a **"Waiting for next ball..."** indicator so it's clear the engine is still working, not stuck.
+
+---
+
+## ⚙️ Configuration (`.env`, optional)
 
 | Variable | Default | Description |
 |---|---|---|
-| `STREAM_MODE` | `preview` | `youtube`, `preview`, or `rtmp` |
-| `YOUTUBE_STREAM_KEY` | `""` | Your YouTube Live stream key |
-| `TTS_VOICE` | `en-IN-PrabhatNeural` | Edge-TTS neural voice model |
-| `COMMENTARY_MODE` | `auto` | `auto`, `gemini`, or `offline` |
-| `GEMINI_API_KEY` | `""` | (Optional) Google Gemini API key |
-| `VIDEO_WIDTH` / `HEIGHT` | `1280` / `720` | Broadcast resolution |
-| `VIDEO_FPS` | `30` | Broadcast framerate |
-| `EVENT_SERVER_PORT` | `8088` | Webhook ingestion port |
+| `PORT` | `8088` | Web server port |
+| `HOST` | `0.0.0.0` | Web server bind address |
 
+The YouTube stream key and match language are entered in the web UI when you start a broadcast, not in `.env`.
+
+---
+
+## 📁 Project layout
+
+- `server.py` — web server, WebSocket live feed, real-time voice streaming.
+- `cricket_streamer.py` — CREX scraping/parsing, TTS, overlay rendering, YouTube RTMP streaming engine.
+- `src/human_commentator.py` — classifies each ball for voice tone; never rewrites the source text.
+- `web/` — browser UI.
