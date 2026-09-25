@@ -308,16 +308,33 @@ class CrexParser:
             runs_str = ball_span.get_text(strip=True) if ball_span else "0"
             commentary_str = c2_span.get_text(" ", strip=True) if c2_span else ""
             commentary_clean = re.sub(r'\s+', ' ', commentary_str).strip()
+            if not commentary_clean:
+                r_upper = runs_str.upper()
+                if r_upper in ("W", "OUT") or "W" in r_upper:
+                    commentary_clean = f"Wicket falls! {matchup_str} out." if matchup_str else "Wicket falls!"
+                elif r_upper == "6":
+                    commentary_clean = "Six runs! Massive hit over the boundary!"
+                elif r_upper == "4":
+                    commentary_clean = "Four runs! Boundary to the fence!"
+                elif r_upper in ("WD", "WIDE"):
+                    commentary_clean = "Wide ball, extra run."
+                elif r_upper in ("NB", "NO BALL"):
+                    commentary_clean = "No ball, free hit awarded."
+                elif r_upper == "0":
+                    commentary_clean = "Dot ball, good defense, no run."
+                elif r_upper in ("1", "2", "3"):
+                    commentary_clean = f"{runs_str} run taken, strike rotated."
+                else:
+                    commentary_clean = f"{runs_str} runs on the delivery."
 
-            if commentary_clean:
-                full_spoken_line = f"Over {over_str}: {matchup_str}. {commentary_clean}" if matchup_str else f"Over {over_str}. {commentary_clean}"
-                balls_data.append({
-                    "over": over_str,
-                    "matchup": matchup_str,
-                    "runs": runs_str,
-                    "commentary": commentary_clean,
-                    "spoken_line": full_spoken_line
-                })
+            full_spoken_line = f"Over {over_str}: {matchup_str}. {commentary_clean}" if matchup_str else f"Over {over_str}. {commentary_clean}"
+            balls_data.append({
+                "over": over_str,
+                "matchup": matchup_str,
+                "runs": runs_str,
+                "commentary": commentary_clean,
+                "spoken_line": full_spoken_line
+            })
 
         # Strategy 4B: Extract from embedded getBallFeeds JSON if HTML classes are missing
         if not balls_data:

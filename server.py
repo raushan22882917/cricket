@@ -232,6 +232,7 @@ class BroadcastHub:
                     # 2. Fast neural audio synthesis directly to MP3 bytes (sub-second)
                     mp3_data = await tts.speak_mp3(spoken_text, rate=rate, pitch=pitch)
                     if not mp3_data:
+                        logger.warning(f"Voice synthesis returned empty for: {spoken_text}")
                         continue
 
                     # Estimate duration (~16000 bytes/sec at 128kbps)
@@ -241,6 +242,7 @@ class BroadcastHub:
                     audio_url = "data:audio/mpeg;base64," + base64.b64encode(mp3_data).decode("ascii")
 
                     # 3. Broadcast audio and speaking event to browser
+                    logger.info(f"🎙️ Broadcasting audio voice ({round(duration, 1)}s) for over {ball_over}: '{spoken_text}'")
                     await self.broadcast_ws("commentary", {
                         "text": spoken_text,
                         "badge": badge,

@@ -264,18 +264,51 @@
   }
 
 
+  const SILENT_AUDIO = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+  let isAudioUnlocked = false;
+
+  function unlockAudio() {
+    if (isAudioUnlocked) return;
+    try {
+      if (audioPlayer) {
+        audioPlayer.src = SILENT_AUDIO;
+        const p = audioPlayer.play();
+        if (p !== undefined) {
+          p.then(() => {
+            audioPlayer.pause();
+            audioPlayer.currentTime = 0;
+            isAudioUnlocked = true;
+          }).catch(() => {});
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Unlock audio on first user interaction anywhere on the page
+  document.addEventListener("click", unlockAudio, { once: true });
+  document.addEventListener("touchstart", unlockAudio, { once: true });
+
   function handleCommentary(data) {
     speakingText.textContent = `"${data.text}"`;
     setTalkingState(true, data.badge);
 
     // If an audio file URL is provided, play it
-    if (data.audio_url && !isAudioMuted) {
+    if (data.audio_url && !isAudioMuted && audioPlayer) {
+      audioPlayer.pause();
+      audioPlayer.currentTime = 0;
+      audioPlayer.muted = false;
       audioPlayer.src = data.audio_url;
-      audioPlayer.play().catch((e) => {
-        console.warn("Auto-play prevented by browser policy (interact with page first):", e);
-        playerStateText.textContent = "Click Mute/Unmute to enable audio playback";
-      });
-      playerStateText.textContent = `Broadcasting: ${data.badge || '🎙️ Live Voice'} (${data.duration ? data.duration.toFixed(1) + 's' : ''})`;
+
+      const playPromise = audioPlayer.play();
+      if (playPromise !== undefined) {
+        playPromise.then(() => {
+          isAudioUnlocked = true;
+          playerStateText.textContent = `🎙️ On-Air Voice: ${data.badge || 'Live Commentary'} (${data.duration ? data.duration.toFixed(1) + 's' : ''})`;
+        }).catch((e) => {
+          console.warn("Auto-play prevented by browser policy (interact with page first):", e);
+          playerStateText.innerHTML = '<span style="color: #f87171; font-weight: 600; cursor: pointer;">🔊 Tap here or click screen to hear voice</span>';
+        });
+      }
     }
 
     // Reset talking state after duration
@@ -298,14 +331,12 @@
       onAirText.textContent = badge ? `${badge} • ON AIR` : "ON AIR (COMMENTATOR)";
       waveform.className = "waveform active";
     } else if (isRunning) {
-      // Broadcast is live but no ball has come in yet — let the user know
-      // the system is still working, not stuck. Clear the last spoken line
-      // too, so the commentary box never shows stale text as if it were
-      // still current while we wait for the next ball to match up.
       onAirBadge.className = "on-air-badge waiting";
       onAirText.textContent = "WAITING FOR NEXT BALL...";
       waveform.className = "waveform";
-      speakingText.textContent = '"Waiting for the next ball\'s commentary..."';
+      if (!speakingText.textContent || speakingText.textContent.includes("Start a broadcast")) {
+        speakingText.textContent = '"Waiting for the next ball\'s commentary..."';
+      }
       playerStateText.textContent = "⏳ Listening for the next ball...";
     } else {
       onAirBadge.className = "on-air-badge";
