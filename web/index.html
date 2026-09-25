@@ -73,7 +73,8 @@
         <div class="input-group lang-group">
           <label for="langSelect">Broadcast Language</label>
           <select id="langSelect">
-            <option value="hi" selected>हिन्दी (Hindi - Madhur Voice)</option>
+            <option value="hinglish" selected>Hinglish AI (Dynamic Live Commentary)</option>
+            <option value="hi">हिन्दी (Hindi - Madhur Voice)</option>
             <option value="en">English (Indian Accent - Prabhat Voice)</option>
           </select>
         </div>
@@ -89,6 +90,10 @@
             <option value="edge" selected>Edge Neural (Free, Default)</option>
             <option value="sarvam">Sarvam AI (Male Voice)</option>
           </select>
+        </div>
+        <div class="input-group gemini-key-group" id="geminiKeyGroup">
+          <label for="geminiApiKey">Gemini API Key (Hinglish AI)</label>
+          <input type="password" id="geminiApiKey" placeholder="Configured via .env (or paste here)">
         </div>
         <div class="input-group sarvam-key-group hidden" id="sarvamKeyGroup">
           <label for="sarvamApiKey">Sarvam API Key</label>

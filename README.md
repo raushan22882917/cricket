@@ -160,10 +160,11 @@ Once the web page is open in your browser:
    - Paste a link from CREX / Cricbuzz / ESPNcricinfo, or
    - Simply type team names (e.g. `India vs Australia`).
 2. **Select Commentary Language**:
-   - Choose **English** or **Hindi**.
-3. **Select Voice Engine**:
+   - Choose **Hinglish AI (Recommended)** for dynamic, energetic Indian TV broadcast commentary (mix of Hindi + English), or pick **Hindi** / **English**.
+3. **Select Voice Engine & AI Keys**:
    - **Edge-TTS**: 100% Free, no API key needed, natural neural voices.
    - **Sarvam AI**: Ultra-realistic Indian English / Hindi voices (enter your Sarvam key or set in `.env`).
+   - **Gemini API Key**: Powers real-time context-aware Hinglish commentary (preconfigured in `.env` or editable in the UI).
 4. **YouTube Live (Optional)**:
    - Paste your YouTube Live RTMP Stream Key if you also want to stream video + audio to YouTube.
 5. Click **Start Broadcast** and listen to live ball-by-ball voice commentary!
@@ -179,7 +180,7 @@ Deploy this application directly to [Render](https://render.com) with full Docke
 1. Push this repository to GitHub or GitLab.
 2. Click the **Deploy to Render** button above (or go to [Render Dashboard](https://dashboard.render.com) -> **New +** -> **Blueprint**).
 3. Connect your repository. Render will automatically read [`render.yaml`](render.yaml).
-4. (Optional) Set `SARVAM_API_KEY` if you plan to use Sarvam AI Indic voices.
+4. (Optional) Set `GEMINI_API_KEY` for Hinglish AI and `SARVAM_API_KEY` if you plan to use Sarvam AI Indic voices.
 5. Click **Apply**. Render will build the Docker container (with FFmpeg and required fonts pre-installed) and launch the live web service.
 
 ### Option 2: Manual Web Service Setup
@@ -200,13 +201,13 @@ Deploy this application directly to [Render](https://render.com) with full Docke
 CREX match page
       │  (scraped every 1.5s)
       ▼
-CrexParser.parse()  →  real ball-by-ball commentary text only
+CrexParser.parse()  →  extracts all live ball text, matchup, bowler, striker & score
       │
       ▼
-HumanCommentator  →  classifies each ball (wicket/six/four/dot) for voice tone,
-                      speaks the source text unchanged
+HumanCommentator  →  transforms all ball input into energetic Hinglish TV commentary
+                      powered by Gemini AI (with fast local fallback)
       │
-      ├──▶ Edge-TTS neural voice  →  streamed in-memory to the browser (WebSocket)
+      ├──▶ Edge-TTS / Sarvam neural voice  →  streamed in-memory to the browser (WebSocket)
       │
       └──▶ CricketStreamingEngine  →  FFmpeg  →  YouTube Live RTMP (optional)
 ```
@@ -227,8 +228,10 @@ Each spoken line is synthesized in memory and sent straight to the browser as au
 |---|---|---|
 | `PORT` | `8088` | Web server port |
 | `HOST` | `0.0.0.0` | Web server bind address |
+| `GEMINI_API_KEY` | *(empty)* | Google Gemini API key for live Hinglish commentary generation |
+| `SARVAM_API_KEY` | *(empty)* | Optional Sarvam AI key for Bulbul voices |
 
-The YouTube stream key and match language are entered in the web UI when you start a broadcast, not in `.env`.
+The YouTube stream key, match language, and API keys can also be entered directly in the web UI when you start a broadcast.
 
 ---
 
@@ -236,5 +239,5 @@ The YouTube stream key and match language are entered in the web UI when you sta
 
 - `server.py` — web server, WebSocket live feed, real-time voice streaming.
 - `cricket_streamer.py` — CREX scraping/parsing, TTS, overlay rendering, YouTube RTMP streaming engine.
-- `src/human_commentator.py` — classifies each ball for voice tone; never rewrites the source text.
+- `src/human_commentator.py` — takes all ball text as input and delivers lively Hinglish commentary.
 - `web/` — browser UI.

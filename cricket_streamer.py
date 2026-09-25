@@ -684,13 +684,13 @@ def sanitize_for_speech(text: str) -> str:
 
 
 class FastTTS:
-    """Broadcaster neural voice generator with English & Hindi support."""
-    def __init__(self, language: str = "en", voice: Optional[str] = None):
+    """Broadcaster neural voice generator with Hinglish, Hindi & English support."""
+    def __init__(self, language: str = "hinglish", voice: Optional[str] = None):
         self.language = language
         if voice:
             self.voice = voice
-        elif language == "hi":
-            # Native, energetic Hindi sports broadcaster
+        elif language in ("hi", "hinglish"):
+            # Native, energetic Hindi / Hinglish sports broadcaster
             self.voice = "hi-IN-MadhurNeural"
         else:
             # English broadcaster
@@ -702,7 +702,7 @@ class FastTTS:
         if len(words) > 40:
             clean_text = " ".join(words[:40]) + "..."
 
-        target_rate = rate or ("+7%" if self.language == "hi" else "+6%")
+        target_rate = rate or ("+8%" if self.language in ("hi", "hinglish") else "+6%")
         target_pitch = pitch or "+1Hz"
 
         comm = edge_tts.Communicate(clean_text, self.voice, rate=target_rate, pitch=target_pitch)
@@ -728,7 +728,7 @@ class FastTTS:
         if len(words) > 35:
             clean_text = " ".join(words[:35]) + "..."
 
-        target_rate = rate or ("+10%" if self.language == "hi" else "+8%")
+        target_rate = rate or ("+9%" if self.language in ("hi", "hinglish") else "+8%")
         target_pitch = pitch or "+1Hz"
 
         comm = edge_tts.Communicate(clean_text, self.voice, rate=target_rate, pitch=target_pitch)
@@ -742,13 +742,13 @@ class FastTTS:
 class SarvamTTS:
     """Sarvam AI 'Bulbul' neural voice — adds male Indian-language broadcaster voices."""
     API_URL = "https://api.sarvam.ai/text-to-speech"
-    DEFAULT_MALE_SPEAKER = {"hi": "shubh", "en": "shubh"}
+    DEFAULT_MALE_SPEAKER = {"hi": "shubh", "hinglish": "shubh", "en": "shubh"}
 
-    def __init__(self, api_key: str, language: str = "hi", speaker: Optional[str] = None):
+    def __init__(self, api_key: str, language: str = "hinglish", speaker: Optional[str] = None):
         self.api_key = api_key
         self.language = language
         self.speaker = speaker or self.DEFAULT_MALE_SPEAKER.get(language, "shubh")
-        self.target_lang_code = "hi-IN" if language == "hi" else "en-IN"
+        self.target_lang_code = "hi-IN" if language in ("hi", "hinglish") else "en-IN"
 
     async def _synthesize_wav(self, text: str, word_limit: int) -> bytes:
         clean_text = sanitize_for_speech(text)
@@ -935,19 +935,21 @@ class CricketStreamingEngine:
         url: str,
         mode: str = "preview",
         stream_key: str = "",
-        language: str = "en",
+        language: str = "hinglish",
         voice: Optional[str] = None,
         output_file: str = "broadcast_stream.mp4",
         tts_provider: str = "edge",
         tts_api_key: Optional[str] = None,
         tts_speaker: Optional[str] = None,
+        gemini_api_key: Optional[str] = None,
     ):
-        self.parser = CrexParser(url, lang=language)
+        self.parser = CrexParser(url, lang="hi" if language in ("hi", "hinglish") else "en")
         self.mode = mode
         self.stream_key = stream_key
         self.language = language
         self.output_file = output_file
         self.translator = FreeTranslator() if language == "hi" else None
+        self.gemini_api_key = gemini_api_key or os.environ.get("GEMINI_API_KEY", "").strip()
         self.renderer = FastOverlayRenderer()
         self.tts = create_tts(language=language, voice=voice, provider=tts_provider,
                                api_key=tts_api_key, speaker=tts_speaker)
@@ -1068,10 +1070,11 @@ class CricketStreamingEngine:
                             if not self.is_running:
                                 break
 
-                            human_res = commentator.humanize(
+                            human_res = await commentator.humanize_async(
                                 b.get("spoken_line") or b.get("commentary", ""),
                                 ball_info={**match_data, **b},
-                                lang=self.language
+                                lang=self.language,
+                                gemini_api_key=self.gemini_api_key
                             )
                             spoken_text = human_res["spoken_text"]
                             self.active_alert = human_res["badge"]
@@ -1136,10 +1139,12 @@ def main():
     parser = argparse.ArgumentParser(description="Cricket AI Link-to-Broadcast Engine")
     parser.add_argument("url", nargs="?", default="https://crex.com/cricket-live-score/pak-w-vs-tha-w-2nd-qtr-final-womens-asian-games-t20-2026-match-updates-13Q0",
                         help="CREX match URL")
-    parser.add_argument("--lang", choices=["en", "hi"], default="en",
-                        help="Commentary language: 'en' (English) or 'hi' (Hindi)")
+    parser.add_argument("--lang", choices=["hinglish", "en", "hi"], default="hinglish",
+                        help="Commentary language: 'hinglish' (Hinglish AI), 'hi' (Hindi), or 'en' (English)")
     parser.add_argument("--voice", default=None,
                         help="Override TTS voice model (e.g. 'hi-IN-MadhurNeural', 'en-IN-PrabhatNeural')")
+    parser.add_argument("--gemini-key", default=None,
+                        help="Gemini API Key for live Hinglish AI commentary")
     parser.add_argument("--mode", choices=["youtube", "preview"], default="preview",
                         help="Stream mode ('preview' saves MP4, 'youtube' pushes RTMP)")
     parser.add_argument("--key", default=os.getenv("YOUTUBE_STREAM_KEY", ""),
@@ -1156,7 +1161,8 @@ def main():
         stream_key=args.key,
         language=args.lang,
         voice=args.voice,
-        output_file=args.output
+        output_file=args.output,
+        gemini_api_key=args.gemini_key
     )
     asyncio.run(engine.run(max_paragraphs=args.lines))
 

@@ -55,8 +55,9 @@ class BroadcastHub:
         for ws in stale:
             self.active_websockets.discard(ws)
 
-    async def start_broadcast(self, url: str, lang: str = "hi", stream_key: str = "",
-                               tts_provider: str = "edge", tts_api_key: str = "", tts_speaker: str = ""):
+    async def start_broadcast(self, url: str, lang: str = "hinglish", stream_key: str = "",
+                               tts_provider: str = "edge", tts_api_key: str = "", tts_speaker: str = "",
+                               gemini_api_key: str = ""):
         if self.is_running:
             return {"ok": False, "error": "Broadcast is already running"}
 
@@ -69,7 +70,7 @@ class BroadcastHub:
         target_url = resolved_url if resolved_url else url
 
         # Pre-flight check: verify URL can be accessed and is not a 404
-        parser = CrexParser(target_url, lang=lang)
+        parser = CrexParser(target_url, lang="hi" if lang in ("hi", "hinglish") else "en")
         try:
             html_text = await parser.fetch_html_async()
             if not html_text:
@@ -84,7 +85,7 @@ class BroadcastHub:
                 target_url = fallback_url
                 resolve_note = fallback_note
                 try:
-                    parser = CrexParser(target_url, lang=lang)
+                    parser = CrexParser(target_url, lang="hi" if lang in ("hi", "hinglish") else "en")
                     html_text = await parser.fetch_html_async()
                     init_data = parser.parse(html_text)
                     self.latest_match_state = init_data
@@ -99,7 +100,8 @@ class BroadcastHub:
         self.is_running = True
         self.broadcast_task = asyncio.create_task(self._run_broadcast_pipeline(
             target_url, lang, stream_key, parser=parser,
-            tts_provider=tts_provider, tts_api_key=tts_api_key, tts_speaker=tts_speaker
+            tts_provider=tts_provider, tts_api_key=tts_api_key, tts_speaker=tts_speaker,
+            gemini_api_key=gemini_api_key
         ))
 
         # Launch YouTube Live RTMP stream if stream_key is provided
@@ -113,7 +115,8 @@ class BroadcastHub:
                     language=lang,
                     tts_provider=tts_provider,
                     tts_api_key=tts_api_key or None,
-                    tts_speaker=tts_speaker or None
+                    tts_speaker=tts_speaker or None,
+                    gemini_api_key=gemini_api_key or None
                 )
                 self.youtube_task = asyncio.create_task(self.youtube_engine.run())
                 logger.info(f"YouTube Live RTMP broadcast engine launched for stream key: {stream_key[:4]}****")
@@ -170,10 +173,11 @@ class BroadcastHub:
         return {"ok": True}
 
     async def _run_broadcast_pipeline(self, url: str, lang: str, stream_key: str, parser: Optional[CrexParser] = None,
-                                       tts_provider: str = "edge", tts_api_key: str = "", tts_speaker: str = ""):
+                                       tts_provider: str = "edge", tts_api_key: str = "", tts_speaker: str = "",
+                                       gemini_api_key: str = ""):
         logger.info(f"Starting ultra-fast real-time broadcast for URL: {url} (Lang: {lang.upper()}, Voice: {tts_provider})")
         if parser is None:
-            parser = CrexParser(url, lang=lang)
+            parser = CrexParser(url, lang="hi" if lang in ("hi", "hinglish") else "en")
         tts = create_tts(language=lang, provider=tts_provider, api_key=tts_api_key or None, speaker=tts_speaker or None)
 
         # Queue bounded to prevent backlog and maintain real-time pace
@@ -196,11 +200,12 @@ class BroadcastHub:
                     ball_over = b.get("over", "Live")
                     ball_runs = b.get("runs", "1")
 
-                    # Classify event for voice modulation; speaks the exact source commentary text
-                    human_res = commentator.humanize(
+                    # Generate dynamic Hinglish live commentary taking all ball text as input
+                    human_res = await commentator.humanize_async(
                         b.get("spoken_line") or b.get("commentary", ""),
                         ball_info={**fresh_data, **b, "runs": ball_runs, "over": ball_over},
-                        lang=lang
+                        lang=lang,
+                        gemini_api_key=gemini_api_key
                     )
                     spoken_text = human_res["spoken_text"]
                     badge = human_res["badge"]
@@ -396,11 +401,12 @@ async def handle_api_start(request: web.Request) -> web.Response:
     try:
         body = await request.json()
         url = body.get("url", "").strip()
-        lang = body.get("lang", "hi")
+        lang = body.get("lang", "hinglish")
         stream_key = body.get("stream_key", "")
         tts_provider = body.get("tts_provider", "edge").strip() or "edge"
         tts_api_key = body.get("sarvam_api_key", "").strip() or os.getenv("SARVAM_API_KEY", "").strip()
         tts_speaker = body.get("sarvam_speaker", "").strip()
+        gemini_api_key = body.get("gemini_api_key", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
 
         if not url:
             return web.json_response({"ok": False, "error": "Match URL or team name is required"}, status=400)
@@ -409,7 +415,8 @@ async def handle_api_start(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "error": "Sarvam API key is required to use the Sarvam voice engine"}, status=400)
 
         res = await hub.start_broadcast(url=url, lang=lang, stream_key=stream_key,
-                                         tts_provider=tts_provider, tts_api_key=tts_api_key, tts_speaker=tts_speaker)
+                                         tts_provider=tts_provider, tts_api_key=tts_api_key, tts_speaker=tts_speaker,
+                                         gemini_api_key=gemini_api_key)
         status_code = 200 if res.get("ok") else 400
         return web.json_response(res, status=status_code)
     except Exception as e:

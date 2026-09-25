@@ -91,6 +91,14 @@
     btnDismissAlert.addEventListener("click", hideAlert);
   }
 
+  const geminiApiKeyInput = document.getElementById("geminiApiKey");
+  if (geminiApiKeyInput) {
+    try {
+      const savedGeminiKey = localStorage.getItem("geminiApiKey");
+      if (savedGeminiKey) geminiApiKeyInput.value = savedGeminiKey;
+    } catch (_) {}
+  }
+
   // Voice Engine Selector: reveal the Sarvam API key field only when selected
   if (voiceEngineSelect && sarvamKeyGroup) {
     try {
@@ -428,6 +436,7 @@
     const key = document.getElementById("streamKey").value.trim();
     const ttsProvider = voiceEngineSelect ? voiceEngineSelect.value : "edge";
     const sarvamApiKey = sarvamApiKeyInput ? sarvamApiKeyInput.value.trim() : "";
+    const geminiApiKey = geminiApiKeyInput ? geminiApiKeyInput.value.trim() : "";
 
     // Prime HTML5 audio element on user click to unlock browser autoplay policy
     try {
@@ -449,6 +458,9 @@
     try {
       if (ttsProvider === "sarvam" && sarvamApiKey) {
         localStorage.setItem("sarvamApiKey", sarvamApiKey);
+      }
+      if (geminiApiKey) {
+        localStorage.setItem("geminiApiKey", geminiApiKey);
       }
     } catch (_) {}
 
@@ -472,7 +484,14 @@
       const resp = await fetch("/api/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, lang, stream_key: key, tts_provider: ttsProvider, sarvam_api_key: sarvamApiKey }),
+        body: JSON.stringify({
+          url,
+          lang,
+          stream_key: key,
+          tts_provider: ttsProvider,
+          sarvam_api_key: sarvamApiKey,
+          gemini_api_key: geminiApiKey
+        }),
       });
       const res = await resp.json();
       if (!res.ok) {
